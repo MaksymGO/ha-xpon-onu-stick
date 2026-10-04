@@ -155,9 +155,47 @@ When the stick requests authentication, it also uses `GET /admin/login.asp` and 
 
 Both pages must be valid before a snapshot is published. When either page is unreachable or invalid, the sensors become unavailable instead of displaying stale readings as current. Polling resumes after ordinary connection failures. Empty or `N/A` readings become unknown, rather than a fabricated zero.
 
-## Dashboard
+## Dashboard card
 
-[`examples/dashboard.yaml`](examples/dashboard.yaml) contains built-in Home Assistant cards for both status pages, the friendly statuses, and a history graph. Paste it into a Manual dashboard card. Entity IDs start with the stick's Device Name, and the example uses `sensor.aot5222zy_*`. Replace `aot5222zy` with the prefix Home Assistant shows for your stick.
+The integration includes a card that shows everything about one stick: the connection state, Rx power against its limits with a 24-hour trend, Tx power, temperature, voltage, bias current, CPU and memory usage, and the ONU and network details. Home Assistant loads the card automatically, so you don't need to add a dashboard resource.
+
+The card follows your Home Assistant theme. These images use sample readings:
+
+<table>
+  <tr>
+    <th>Light theme</th>
+    <th>Dark theme</th>
+  </tr>
+  <tr>
+    <td valign="top">
+      <img src="docs/screenshots/dashboard-card-light.png" alt="XPON ONU Stick card in the light theme: Connected status, Rx power of -21.84 dBm rated Good on a colored range bar, a 24-hour trend line, Tx power, temperature, voltage, and bias current tiles, CPU and memory bars, and ONU and network details" width="380">
+    </td>
+    <td valign="top">
+      <img src="docs/screenshots/dashboard-card-dark.png" alt="The same XPON ONU Stick card in the dark theme" width="380">
+    </td>
+  </tr>
+</table>
+
+To add it, edit a dashboard, select **Add card**, and search for **XPON ONU Stick**. In YAML:
+
+```yaml
+type: custom:xpon-onu-stick-card
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `device_id` | The first stick found | The stick to show. Pick it in the card editor if you have more than one. |
+| `title` | The stick's device name | The card title. |
+| `show_history` | `true` | Show the 24-hour Rx power trend. |
+| `show_system` | `true` | Show CPU and memory usage. |
+| `show_details` | `true` | Show the ONU state, ONU ID, LOID status, IP address, subnet mask, and MAC address. |
+| `hide_mac` | `false` | Leave out the MAC address, for example in screenshots. |
+
+Select any reading to open its details and history. The card reads only the sensors and their history in Home Assistant and never contacts the stick. If the card is missing after an update, reload the browser page.
+
+### Built-in cards
+
+[`examples/dashboard.yaml`](examples/dashboard.yaml) shows the same readings with built-in Home Assistant cards and a history graph. Paste it into a Manual dashboard card. Entity IDs start with the stick's Device Name, and the example uses `sensor.aot5222zy_*`. Replace `aot5222zy` with the prefix Home Assistant shows for your stick.
 
 
 ## Supported devices

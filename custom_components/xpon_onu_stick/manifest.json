@@ -1,6 +1,7 @@
 {
   "domain": "xpon_onu_stick",
   "name": "XPON ONU Stick",
+  "after_dependencies": ["frontend", "http"],
   "codeowners": ["@vineetchoudhary"],
   "config_flow": true,
   "documentation": "https://github.com/vineetchoudhary/ha-xpon-onu-stick",

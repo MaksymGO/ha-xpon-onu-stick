@@ -89,6 +89,54 @@
   },
   "entity": {
     "sensor": {
+      "device_name": {
+        "name": "Device name"
+      },
+      "uptime": {
+        "name": "Uptime"
+      },
+      "firmware_version": {
+        "name": "Firmware version"
+      },
+      "cpu_usage": {
+        "name": "CPU usage"
+      },
+      "memory_usage": {
+        "name": "Memory usage"
+      },
+      "ip_address": {
+        "name": "IP address"
+      },
+      "subnet_mask": {
+        "name": "Subnet mask"
+      },
+      "mac_address": {
+        "name": "MAC address"
+      },
+      "temperature": {
+        "name": "Temperature"
+      },
+      "voltage": {
+        "name": "Voltage"
+      },
+      "tx_power": {
+        "name": "Tx power"
+      },
+      "rx_power": {
+        "name": "Rx power"
+      },
+      "bias_current": {
+        "name": "Bias current"
+      },
+      "onu_state": {
+        "name": "ONU state"
+      },
+      "onu_id": {
+        "name": "ONU ID"
+      },
+      "loid_status": {
+        "name": "LOID status"
+      },
       "rx_power_status": {
         "name": "Rx power status",
         "state": {

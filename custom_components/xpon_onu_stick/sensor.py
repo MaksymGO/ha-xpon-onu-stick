@@ -34,20 +34,20 @@ PARALLEL_UPDATES = 0
 SENSORS = (
     SensorEntityDescription(
         key="device_name",
-        name="Device name",
+        translation_key="device_name",
         icon="mdi:router-network",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
-    SensorEntityDescription(key="uptime", name="Uptime", icon="mdi:timer-outline"),
+    SensorEntityDescription(key="uptime", translation_key="uptime", icon="mdi:timer-outline"),
     SensorEntityDescription(
         key="firmware_version",
-        name="Firmware version",
+        translation_key="firmware_version",
         icon="mdi:chip",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SensorEntityDescription(
         key="cpu_usage",
-        name="CPU usage",
+        translation_key="cpu_usage",
         icon="mdi:cpu-64-bit",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -55,7 +55,7 @@ SENSORS = (
     ),
     SensorEntityDescription(
         key="memory_usage",
-        name="Memory usage",
+        translation_key="memory_usage",
         icon="mdi:memory",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -63,25 +63,25 @@ SENSORS = (
     ),
     SensorEntityDescription(
         key="ip_address",
-        name="IP address",
+        translation_key="ip_address",
         icon="mdi:ip-network",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SensorEntityDescription(
         key="subnet_mask",
-        name="Subnet mask",
+        translation_key="subnet_mask",
         icon="mdi:ip-network-outline",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SensorEntityDescription(
         key="mac_address",
-        name="MAC address",
+        translation_key="mac_address",
         icon="mdi:network-outline",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SensorEntityDescription(
         key="temperature",
-        name="Temperature",
+        translation_key="temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         state_class=SensorStateClass.MEASUREMENT,
@@ -89,7 +89,7 @@ SENSORS = (
     ),
     SensorEntityDescription(
         key="voltage",
-        name="Voltage",
+        translation_key="voltage",
         device_class=SensorDeviceClass.VOLTAGE,
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         state_class=SensorStateClass.MEASUREMENT,
@@ -97,7 +97,7 @@ SENSORS = (
     ),
     SensorEntityDescription(
         key="tx_power",
-        name="Tx power",
+        translation_key="tx_power",
         icon="mdi:upload-network",
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
         native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
@@ -106,7 +106,7 @@ SENSORS = (
     ),
     SensorEntityDescription(
         key="rx_power",
-        name="Rx power",
+        translation_key="rx_power",
         icon="mdi:download-network",
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
         native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
@@ -115,17 +115,19 @@ SENSORS = (
     ),
     SensorEntityDescription(
         key="bias_current",
-        name="Bias current",
+        translation_key="bias_current",
         device_class=SensorDeviceClass.CURRENT,
         native_unit_of_measurement=UnitOfElectricCurrent.MILLIAMPERE,
         suggested_unit_of_measurement=UnitOfElectricCurrent.MILLIAMPERE,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=2,
     ),
-    SensorEntityDescription(key="onu_state", name="ONU state", icon="mdi:access-point-network"),
-    SensorEntityDescription(key="onu_id", name="ONU ID", icon="mdi:identifier"),
     SensorEntityDescription(
-        key="loid_status", name="LOID status", icon="mdi:account-check-outline"
+        key="onu_state", translation_key="onu_state", icon="mdi:access-point-network"
+    ),
+    SensorEntityDescription(key="onu_id", translation_key="onu_id", icon="mdi:identifier"),
+    SensorEntityDescription(
+        key="loid_status", translation_key="loid_status", icon="mdi:account-check-outline"
     ),
 )
 STATUS_SENSORS = tuple(
