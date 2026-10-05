@@ -79,6 +79,7 @@ if [[ "$setup" -eq 1 ]]; then
 fi
 
 run bash -n scripts/test.sh
+run bash -n scripts/card.sh
 run "$TEST_PYTHON" tools/validate_repository.py
 run "$TEST_PYTHON" -m pip check
 run "$TEST_PYTHON" -m ruff check custom_components tests tools

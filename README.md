@@ -238,38 +238,10 @@ The integration works when all of these are true:
 - The stick is in GPON mode. In EPON mode, the firmware replaces the ONU State, ONU ID, and LOID Status rows with an EPON table, so the integration reports missing fields.
 - If the pages require a login, `/admin/login.asp` has a form that posts `username`, `password`, and `save` to `/boaform/admin/formLogin` with an empty challenge. Older Realtek firmware that names the password field `psd` isn't supported.
 
-The quickest check is the [live test](#test-the-real-stick), which prints all 16 readings or the reason it can't read them.
+The quickest check is the [live test](scripts/README.md#test-the-real-stick), which prints all 16 readings or the reason it can't read them.
 
 References: [ODI DFP-34X-2C2 firmware notes](https://github.com/Anime4000/RTL960x/blob/main/Firmware/DFP-34X-2C2/README.md), [ODI firmware archive](https://www.tripleoxygen.net/files/devices/odi/dfp-34x-2c2/firmware/), and [DFP-34X-2C2 hardware reference](https://hack-gpon.org/ont-odi-realtek-dfp-34x-2c2/).
 
-## Development and verification
+## Development
 
-Run commands from the repository directory. Use **Python 3.14.2 or newer in the 3.14 series** for the pinned Home Assistant test environment. For the first run:
-
-```sh
-./scripts/test.sh --setup
-```
-
-`--setup` creates `.venv` if needed and installs `requirements-dev.txt`. If Python has a different executable path, use `PYTHON=/path/to/python3.14 ./scripts/test.sh --setup`. A normal run reuses the environment:
-
-```sh
-./scripts/test.sh
-```
-
-The script checks HACS metadata, repository layout, translations, brand images, installed dependencies, lint, formatting, and the complete test suite. Tests cover status boundaries, ONU state descriptions, shared polling, options form display, and saving or clearing module-specific limits. It stops at the first failing check and returns a nonzero exit code. Full output is saved to `.test-results/test-*.log`, including failed runs.
-
-### Test the real stick
-
-To run all checks and then read current Device Status and PON Status values from this computer, pass your ONU management address with `--host`. There is no default address. Replace the example `http://onu.example` below with your device's address:
-
-```sh
-./scripts/test.sh --live --host http://onu.example
-```
-
-If the stick requires authentication:
-
-```sh
-./scripts/test.sh --live --host http://onu.example --username YOUR_USERNAME
-```
-
-The script prompts privately for the password, then prints all 16 readings as JSON. Passwords are not passed as command-line arguments or saved in the test log. The live readings themselves are included in the log. A connection, authentication, or parsing failure makes the script fail. Use `./scripts/test.sh --help` for all options.
+See [scripts/README.md](scripts/README.md) to set up the test environment, run the checks, test against a real stick, and preview or test the dashboard card.

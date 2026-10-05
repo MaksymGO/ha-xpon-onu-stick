@@ -91,4 +91,4 @@ Changing the address preserves entities for the same stick. Add a different stic
 - **Reading unknown:** the device returned an empty or unavailable value.
 - **Card missing from the card picker:** reload the browser page after installing or updating the integration.
 
-For a read-only connection check, see [Test the real stick](../README.md#test-the-real-stick).
+For a read-only connection check, see [Test the real stick](../scripts/README.md#test-the-real-stick).
