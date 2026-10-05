@@ -130,6 +130,8 @@ class Browser:
             "--disable-sync",
             "--hide-scrollbars",
             "--mute-audio",
+            # CI runners often can't start Chrome's sandbox; it only loads the local preview.
+            *(["--no-sandbox"] if os.environ.get("CI") else []),
             "about:blank",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
