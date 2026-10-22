@@ -90,6 +90,32 @@ def test_registration_states_include_explanations(code):
     assert registration_status(f" {code.lower()} ").state == result.state
 
 
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("Initial State(O1)", "initial"),
+        ("Standby State(O2)", "standby"),
+        ("Serial Number State(O3)", "serial_number"),
+        ("Ranging State(O4)", "ranging"),
+        ("Operation State(O5)", "connected"),
+        ("POPUP State(O6)", "recovering"),
+        ("Emergency Stop State(O7)", "disabled"),
+        (" operation state ( o5 ) ", "connected"),
+    ],
+)
+def test_labeled_firmware_registration_states_keep_original_text(raw, expected):
+    result = registration_status(raw)
+    assert result.state == expected
+    assert result.attributes["onu_state"] == raw
+
+
+@pytest.mark.parametrize(
+    "raw", ["Operation State(O9)", "O50", "O5 error", "O1/O5", "State(O1)(O5)", "5"]
+)
+def test_ambiguous_and_unknown_registration_formats_are_not_guessed(raw):
+    assert registration_status(raw).state == "unrecognized"
+
+
 def test_unknown_registration_states():
     assert registration_status(None).state is None
     assert registration_status("").state is None

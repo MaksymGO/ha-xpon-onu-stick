@@ -149,6 +149,34 @@ test("shows Unavailable when the stick can't be reached", async () => {
   equal(tiles(card).map(([, value]) => value), ["—", "—", "—", "—"], "tile values");
 });
 
+test("isolates a parsing failure and restores the reading on recovery", async () => {
+  const card = await mount("healthy");
+  const healthy = card._hass;
+  const states = { ...healthy.states };
+  for (const key of ["tx_power", "tx_power_status"]) {
+    const entityId = `sensor.aot5222zy_${key}`;
+    states[entityId] = {
+      ...states[entityId],
+      state: "unknown",
+      attributes: { ...states[entityId].attributes, parse_error: "Invalid number for tx power: '-inf dBm'" },
+    };
+  }
+  card.hass = { ...healthy, states };
+  await tick();
+  equal(text($(card, ".badge")), "Connected O5", "registration remains visible");
+  equal(text($(card, ".value-xl")), "-21.84dBm", "Rx remains visible");
+  equal(tiles(card), [
+    ["Tx power", "—", "—"],
+    ["Temperature", "41.20 °C", "Normal"],
+    ["Voltage", "3.256 V", "Normal"],
+    ["Bias current", "11.40 mA", "Limits not set"],
+  ], "only the affected tile is unknown");
+  equal($$(card, ".meter-head b").map(text), ["3%", "50%"], "system readings remain visible");
+  card.hass = healthy;
+  await tick();
+  equal(tiles(card)[0], ["Tx power", "2.06 dBm", "Good"], "Tx recovers");
+});
+
 test("explains when no stick is configured", async () => {
   const card = await mount("empty");
   ok(text($(card, ".empty")).startsWith("No XPON ONU Stick device found"), "empty message");

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 
 import aiohttp
@@ -18,6 +19,8 @@ from .const import (
     PON_STATUS_PATH,
     REQUEST_TIMEOUT,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class OnuError(Exception):
@@ -157,8 +160,33 @@ _NUMBER_UNITS = {
 _UNKNOWN_VALUES = {"", "-", "--", "n/a", "na", "unknown", "not available"}
 
 
-def parse_status_page(html: str, fields: dict[str, str]) -> dict[str, str | float | int | None]:
-    """Extract the expected page fields. Reject login, error, or unrelated pages."""
+def _parse_value(raw: str, label: str, key: str) -> str | float | int | None:
+    """Validate one reading without substituting a fabricated number."""
+    if raw.casefold() in _UNKNOWN_VALUES:
+        return None
+    if key not in _NUMBER_UNITS:
+        return raw
+    match = re.fullmatch(
+        rf"([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(?:{_NUMBER_UNITS[key]})?",
+        raw,
+        re.IGNORECASE,
+    )
+    if not match:
+        raise OnuParseError(f"Invalid number for {label}: {raw!r}")
+    number = float(match[1])
+    if not math.isfinite(number):
+        raise OnuParseError(f"Non-finite number for {label}: {raw!r}")
+    if key == "onu_id":
+        if number < 0 or not number.is_integer():
+            raise OnuParseError(f"Invalid ONU ID: {raw!r}")
+        return int(number)
+    return number
+
+
+def parse_status_page(
+    html: str, fields: dict[str, str], *, field_errors: dict[str, str] | None = None
+) -> dict[str, str | float | int | None]:
+    """Extract readings independently. Reject login or unrelated pages as a whole."""
     if re.search(r"<input\b[^>]*\btype\s*=\s*['\"]?password\b", html, re.IGNORECASE):
         raise _OnuLoginRequired("The device returned a login form")
     if re.search(r"href\s*=\s*['\"]?/admin/login\.asp(?:['\"\s>])", html, re.IGNORECASE):
@@ -167,44 +195,29 @@ def parse_status_page(html: str, fields: dict[str, str]) -> dict[str, str | floa
     parser.feed(html)
     parser.close()
     parser._finish_row()
-    missing = fields.keys() - parser.rows.keys()
-    if missing:
-        raise OnuParseError(f"Status page is missing fields: {', '.join(sorted(missing))}")
+    if not fields.keys() & parser.rows.keys():
+        raise OnuParseError("Status page has no supported fields")
 
     values: dict[str, str | float | int | None] = {}
     for label, key in fields.items():
-        raw = parser.rows[label]
-        if raw.casefold() in _UNKNOWN_VALUES:
+        try:
+            if label not in parser.rows:
+                raise OnuParseError(f"Status page is missing field: {label}")
+            values[key] = _parse_value(parser.rows[label], label, key)
+        except OnuParseError as err:
             values[key] = None
-            continue
-        if key not in _NUMBER_UNITS:
-            values[key] = raw
-            continue
-        match = re.fullmatch(
-            rf"([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(?:{_NUMBER_UNITS[key]})?",
-            raw,
-            re.IGNORECASE,
-        )
-        if not match:
-            raise OnuParseError(f"Invalid number for {label}")
-        number = float(match[1])
-        if not math.isfinite(number):
-            raise OnuParseError(f"Non-finite number for {label}")
-        if key == "onu_id":
-            if number < 0 or not number.is_integer():
-                raise OnuParseError("Invalid ONU ID")
-            values[key] = int(number)
-        else:
-            values[key] = number
+            if field_errors is not None:
+                field_errors[key] = str(err)
     return values
 
 
 @dataclass(frozen=True)
 class OnuStatus:
-    """One complete poll of both status pages."""
+    """One poll of both pages, with invalid readings isolated by field."""
 
     values: dict[str, str | float | int | None]
     mac_address: str
+    field_errors: dict[str, str] = field(default_factory=dict)
 
 
 class _LoginFormParser(HTMLParser):
@@ -250,6 +263,7 @@ class OnuClient:
         self._username = username
         self._password = password
         self._lock = asyncio.Lock()
+        self._field_errors: dict[str, str] = {}
         # Home Assistant's shared HTTP session must not own this device's login
         # state. Keep cookies per client, accepting the ONU's numeric IP address.
         self._cookie_jar = aiohttp.CookieJar(unsafe=True)
@@ -337,12 +351,30 @@ class OnuClient:
 
     async def _async_read_status(self) -> OnuStatus:
         """Use sequential requests to keep the embedded server's load low."""
-        device = parse_status_page(await self._request("GET", DEVICE_STATUS_PATH), DEVICE_FIELDS)
-        pon = parse_status_page(await self._request("GET", PON_STATUS_PATH), PON_FIELDS)
+        field_errors: dict[str, str] = {}
+        device = parse_status_page(
+            await self._request("GET", DEVICE_STATUS_PATH),
+            DEVICE_FIELDS,
+            field_errors=field_errors,
+        )
+        pon = parse_status_page(
+            await self._request("GET", PON_STATUS_PATH), PON_FIELDS, field_errors=field_errors
+        )
         mac = device["mac_address"]
-        if not isinstance(mac, str) or not device["device_name"]:
+        if not isinstance(mac, str):
             raise OnuParseError("Device identity is missing")
-        return OnuStatus(values={**device, **pon}, mac_address=normalize_mac(mac))
+        identity = normalize_mac(mac)
+        for key, error in field_errors.items():
+            if self._field_errors.get(key) != error:
+                _LOGGER.error(
+                    "%s at %s. This reading is unknown. Other readings will continue updating",
+                    error,
+                    self.host,
+                )
+        for key in self._field_errors.keys() - field_errors.keys():
+            _LOGGER.info("Parsing error cleared for %s at %s", key, self.host)
+        self._field_errors = field_errors.copy()
+        return OnuStatus(values={**device, **pon}, mac_address=identity, field_errors=field_errors)
 
     async def async_get_status(self) -> OnuStatus:
         """Reuse login state, and authenticate at most once per poll if needed."""

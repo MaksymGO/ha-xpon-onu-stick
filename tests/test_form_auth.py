@@ -200,6 +200,30 @@ async def test_form_login_in_home_assistant_and_expiry_without_reauth_prompt(has
     assert not hass.config_entries.flow.async_progress()
 
 
+async def test_session_expiry_between_pages_during_an_outage(hass, onu_server, outage_pon_html):
+    host, state, _ = onu_server
+    state["form_auth"] = ("reader", "secret")
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "user"},
+        data={CONF_HOST: host, CONF_USERNAME: "reader", CONF_PASSWORD: "secret"},
+    )
+    await hass.async_block_till_done()
+    entry = result["result"]
+    logins_before = len(state["login_posts"])
+    state["pon"] = outage_pon_html
+    state["expire_before_pon"] = True
+    await entry.runtime_data.async_refresh()
+    assert entry.runtime_data.last_update_success
+    assert len(state["login_posts"]) == logins_before + 1
+    assert hass.states.get("sensor.aot5222zy_tx_power").state == "unknown"
+    assert "-inf dBm" in hass.states.get("sensor.aot5222zy_tx_power").attributes["parse_error"]
+    assert hass.states.get("sensor.aot5222zy_rx_power").state == "-40.0"
+    assert hass.states.get("sensor.aot5222zy_onu_state").state == "O1"
+    assert all(sensor.state != "unavailable" for sensor in hass.states.async_all("sensor"))
+    assert not hass.config_entries.flow.async_progress()
+
+
 async def test_form_reauthentication_after_password_change(hass, onu_server):
     host, state, _ = onu_server
     state["form_auth"] = ("reader", "secret")

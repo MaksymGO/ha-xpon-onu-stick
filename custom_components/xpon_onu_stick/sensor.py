@@ -174,8 +174,8 @@ class OnuSensor(CoordinatorEntity[OnuCoordinator], SensorEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.entry.unique_id)},
             connections={(CONNECTION_NETWORK_MAC, coordinator.data.mac_address)},
-            name=str(coordinator.data.values["device_name"]),
-            model=str(coordinator.data.values["device_name"]),
+            name=coordinator.data.values["device_name"] or coordinator.entry.title,
+            model=coordinator.data.values["device_name"],
             sw_version=coordinator.data.values["firmware_version"],
             configuration_url=coordinator.client.host,
         )
@@ -184,12 +184,18 @@ class OnuSensor(CoordinatorEntity[OnuCoordinator], SensorEntity):
     def native_value(self) -> str | float | int | None:
         return self.coordinator.data.values.get(self.entity_description.key)
 
+    def _parse_error_attributes(self, key: str) -> dict[str, str]:
+        """Expose the parsing problem on only the affected reading/status."""
+        error = self.coordinator.data.field_errors.get(key)
+        return {"parse_error": error} if error else {}
+
     @property
     def extra_state_attributes(self) -> dict | None:
+        attributes = self._parse_error_attributes(self.entity_description.key)
         if self.entity_description.key == "onu_state":
             status = registration_status(self.coordinator.data.values.get("onu_state"))
-            return {"description": status.attributes["description"]}
-        return None
+            attributes["description"] = status.attributes["description"]
+        return attributes or None
 
 
 class OnuStatusSensor(OnuSensor):
@@ -212,4 +218,9 @@ class OnuStatusSensor(OnuSensor):
 
     @property
     def extra_state_attributes(self) -> dict:
-        return self._status.attributes
+        key = (
+            "onu_state"
+            if self.entity_description.key == "onu_registration_status"
+            else self.entity_description.key.removesuffix("_status")
+        )
+        return {**self._status.attributes, **self._parse_error_attributes(key)}

@@ -1,5 +1,6 @@
 """Verify setup flows and entity lifecycle in the real Home Assistant runtime."""
 
+import re
 from unittest.mock import patch
 
 import aiohttp
@@ -99,6 +100,154 @@ async def test_failed_poll_marks_every_sensor_unavailable_then_recovers(hass, on
     assert hass.states.get("sensor.aot5222zy_onu_state").state == "O5"
     assert hass.states.get("sensor.aot5222zy_temperature_status").state == "good"
     assert hass.states.get("sensor.aot5222zy_onu_registration_status").state == "connected"
+
+
+async def test_setup_during_outage_loads_all_sensors(hass, onu_server, outage_pon_html):
+    host, state, _ = onu_server
+    state["pon"] = outage_pon_html
+    entry = await add_device(hass, host)
+    assert entry.state is ConfigEntryState.LOADED
+    sensors = hass.states.async_all("sensor")
+    assert len(sensors) == 22
+    for sensor in sensors:
+        assert sensor.state != "unavailable"
+        if sensor.entity_id in {"sensor.aot5222zy_tx_power", "sensor.aot5222zy_tx_power_status"}:
+            assert sensor.state == "unknown"
+            assert sensor.attributes["parse_error"] == "Invalid number for tx power: '-inf dBm'"
+        else:
+            assert "parse_error" not in sensor.attributes
+    assert hass.states.get("sensor.aot5222zy_rx_power").state == "-40.0"
+    assert hass.states.get("sensor.aot5222zy_onu_state").state == "O1"
+    assert hass.states.get("sensor.aot5222zy_onu_registration_status").state == "initial"
+
+
+async def test_bad_fields_keep_updating_others_and_recover(hass, onu_server, outage_pon_html):
+    host, state, _ = onu_server
+    entry = await add_device(hass, host)
+    healthy_pon = state["pon"]
+    state["pon"] = outage_pon_html.replace("37.277344 C", "41 C").replace("Rx Power", "Unsupported")
+    state["device"] = state["device"].replace(">0%<", ">bad%<")
+    await entry.runtime_data.async_refresh()
+    affected = {"tx_power", "tx_power_status", "rx_power", "rx_power_status", "cpu_usage"}
+    for sensor in hass.states.async_all("sensor"):
+        assert sensor.state != "unavailable"
+        if sensor.entity_id.removeprefix("sensor.aot5222zy_") in affected:
+            assert sensor.state == "unknown"
+            assert "parse_error" in sensor.attributes
+        else:
+            assert "parse_error" not in sensor.attributes
+    assert hass.states.get("sensor.aot5222zy_temperature").state == "41.0"
+    assert hass.states.get("sensor.aot5222zy_onu_state").state == "O1"
+    # Even if the value remains unknown, a changed parsing error must reach HA.
+    state["pon"] = state["pon"].replace("-inf dBm", "broken dBm")
+    await entry.runtime_data.async_refresh()
+    assert "broken dBm" in hass.states.get("sensor.aot5222zy_tx_power").attributes["parse_error"]
+    state["pon"] = healthy_pon
+    state["device"] = state["device"].replace(">bad%<", ">0%<")
+    await entry.runtime_data.async_refresh()
+    assert entry.runtime_data.data.field_errors == {}
+    assert hass.states.get("sensor.aot5222zy_tx_power").state == "1.9399"
+    assert hass.states.get("sensor.aot5222zy_tx_power_status").state == "good"
+    assert all("parse_error" not in sensor.attributes for sensor in hass.states.async_all("sensor"))
+
+
+@pytest.mark.parametrize("label, key", [("ONU State", "onu_state"), ("LOID Status", "loid_status")])
+async def test_missing_text_field_is_isolated(hass, onu_server, label, key):
+    host, state, _ = onu_server
+    state["pon"] = state["pon"].replace(label, "Unsupported")
+    entry = await add_device(hass, host)
+    assert entry.state is ConfigEntryState.LOADED
+    sensor = hass.states.get(f"sensor.aot5222zy_{key}")
+    assert sensor.state == "unknown"
+    assert sensor.attributes["parse_error"] == f"Status page is missing field: {label.casefold()}"
+    if key == "onu_state":
+        registration = hass.states.get("sensor.aot5222zy_onu_registration_status")
+        assert registration.state == "unknown"
+        assert registration.attributes["parse_error"] == sensor.attributes["parse_error"]
+    assert hass.states.get("sensor.aot5222zy_tx_power").state == "1.9399"
+
+
+async def test_missing_device_name_uses_identity_as_title(hass, onu_server):
+    host, state, _ = onu_server
+    state["device"] = state["device"].replace("Device Name", "Unsupported")
+    entry = await add_device(hass, host)
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.title == "XPON ONU Stick (02:00:00:00:00:01)"
+    assert len(hass.states.async_all("sensor")) == 22
+    assert all(sensor.state != "unavailable" for sensor in hass.states.async_all("sensor"))
+
+
+@pytest.mark.parametrize(
+    "page, label, key",
+    [
+        (page, label, key)
+        for page, fields in (("device", DEVICE_FIELDS), ("pon", PON_FIELDS))
+        for label, key in fields.items()
+        if key != "mac_address"
+    ],
+)
+async def test_each_field_failure_preserves_other_entities_and_recovers(
+    hass, onu_server, page, label, key
+):
+    host, state, _ = onu_server
+    entry = await add_device(hass, host)
+    entities = {
+        entity.translation_key: entity.entity_id
+        for entity in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    }
+    baseline = {sensor.entity_id: sensor.state for sensor in hass.states.async_all("sensor")}
+    original = state[page]
+    state[page] = re.sub(re.escape(label), "Unsupported Field", original, flags=re.IGNORECASE)
+    await entry.runtime_data.async_refresh()
+    assert entry.runtime_data.last_update_success
+    affected = {key, f"{key}_status"}
+    if key == "onu_state":
+        affected.add("onu_registration_status")
+    for field, entity_id in entities.items():
+        sensor = hass.states.get(entity_id)
+        if field in affected:
+            assert sensor.state == "unknown"
+            assert sensor.attributes["parse_error"] == f"Status page is missing field: {label}"
+        else:
+            assert sensor.state == baseline[entity_id]
+            assert "parse_error" not in sensor.attributes
+    state[page] = original
+    await entry.runtime_data.async_refresh()
+    assert {
+        sensor.entity_id: sensor.state for sensor in hass.states.async_all("sensor")
+    } == baseline
+    assert all("parse_error" not in sensor.attributes for sensor in hass.states.async_all("sensor"))
+
+
+async def test_outage_readings_return_after_a_transport_failure(hass, onu_server, outage_pon_html):
+    host, state, _ = onu_server
+    state["pon"] = outage_pon_html
+    entry = await add_device(hass, host)
+    state["status"] = 500
+    await entry.runtime_data.async_refresh()
+    assert all(sensor.state == "unavailable" for sensor in hass.states.async_all("sensor"))
+    state["status"] = 200
+    await entry.runtime_data.async_refresh()
+    assert entry.runtime_data.last_update_success
+    assert hass.states.get("sensor.aot5222zy_tx_power").state == "unknown"
+    assert "parse_error" in hass.states.get("sensor.aot5222zy_tx_power").attributes
+    assert hass.states.get("sensor.aot5222zy_rx_power").state == "-40.0"
+    assert hass.states.get("sensor.aot5222zy_onu_state").state == "O1"
+    assert all(sensor.state != "unavailable" for sensor in hass.states.async_all("sensor"))
+
+
+async def test_labeled_firmware_registration_is_classified_without_altering_raw_state(
+    hass, onu_server
+):
+    host, state, _ = onu_server
+    state["pon"] = state["pon"].replace(">O5<", ">Operation State(O5)<")
+    entry = await add_device(hass, host)
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass.states.get("sensor.aot5222zy_onu_state").state == "Operation State(O5)"
+    status = hass.states.get("sensor.aot5222zy_onu_registration_status")
+    assert status.state == "connected"
+    assert status.attributes["onu_state"] == "Operation State(O5)"
+    assert "established" in hass.states.get("sensor.aot5222zy_onu_state").attributes["description"]
 
 
 async def test_friendly_statuses_follow_new_readings_on_the_shared_poll(hass, onu_server):

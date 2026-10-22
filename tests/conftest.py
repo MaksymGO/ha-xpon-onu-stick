@@ -26,6 +26,17 @@ def pon_html():
 
 
 @pytest.fixture
+def outage_pon_html(pon_html):
+    """Reproduce readings observed on the physical ONU during a GPON outage."""
+    return (
+        pon_html.replace("1.939900  dBm", "-inf dBm")
+        .replace("-26.382721  dBm", "-40.000000 dBm")
+        .replace("11.150000 mA", "0.000000 mA")
+        .replace(">O5<", ">O1<")
+    )
+
+
+@pytest.fixture
 def login_html():
     return (FIXTURES / "login.html").read_text()
 

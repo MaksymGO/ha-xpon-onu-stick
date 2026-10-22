@@ -47,6 +47,20 @@ async def test_live_check_prints_complete_status(onu_server, tmp_path):
     assert requests == [("GET", "/status.asp", None), ("GET", "/status_pon.asp", None)]
 
 
+async def test_live_check_reports_outage_readings_and_field_error(
+    onu_server, tmp_path, outage_pon_html
+):
+    host, state, _ = onu_server
+    state["pon"] = outage_pon_html
+    returncode, stdout, stderr = await run_status_check(host, tmp_path)
+    assert returncode == 0, stderr
+    readings = json.loads(stdout)
+    assert readings["tx_power"] is None
+    assert readings["rx_power"] == -40.0
+    assert readings["onu_state"] == "O1"
+    assert "Invalid number for tx power: '-inf dBm'" in stderr
+
+
 async def test_live_check_returns_failure_on_server_error(onu_server, tmp_path):
     host, state, requests = onu_server
     state["status"] = 500
