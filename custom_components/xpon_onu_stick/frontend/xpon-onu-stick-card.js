@@ -2,7 +2,7 @@
  * XPON ONU Stick dashboard card.
  *
  * Shows every reading of one ONU stick in a single card. The integration serves
- * this file and loads it in the frontend, so no dashboard resource is needed.
+ * this file and registers its dashboard resource automatically.
  * It has no build step and no external libraries.
  */
 
@@ -616,7 +616,7 @@
       name: "XPON ONU Stick",
       description: "Optical levels, connection state, and device details of an ONU stick in one card.",
       preview: true,
-      documentationURL: "https://github.com/vineetchoudhary/ha-xpon-onu-stick#dashboard-card",
+      documentationURL: "https://github.com/vineetchoudhary/ha-xpon-onu-stick/blob/master/docs/dashboard.md",
     });
   }
 })();
