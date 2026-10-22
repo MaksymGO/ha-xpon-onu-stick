@@ -12,5 +12,5 @@ PON_STATUS_PATH = "/status_pon.asp"
 LOGIN_PAGE_PATH = "/admin/login.asp"
 LOGIN_FORM_PATH = "/boaform/admin/formLogin"
 
-# Dashboard card served by the integration and loaded by the frontend.
+# Dashboard card served by the integration and loaded as a dashboard resource.
 CARD_URL = f"/{DOMAIN}/xpon-onu-stick-card.js"
