@@ -47,7 +47,6 @@ async def test_live_check_prints_complete_status(onu_server, tmp_path):
     assert requests == [
         ("GET", "/status.asp", None),
         ("GET", "/status_pon.asp", None),
-        ("POST", "/boaform/admin/formLogout", None),
     ]
 
 
@@ -65,7 +64,6 @@ async def test_live_check_prints_epon_status(onu_server, tmp_path, epon_device_h
     assert requests == [
         ("GET", "/status.asp", None),
         ("GET", "/status_pon.asp", None),
-        ("POST", "/boaform/admin/formLogout", None),
     ]
 
 

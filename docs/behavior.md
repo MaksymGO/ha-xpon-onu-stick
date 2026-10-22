@@ -4,18 +4,20 @@ The integration reads the stick's web interface, independently of the router or 
 
 ## Polling
 
-All sensors share two status reads followed by logout every **30 seconds**. Set an interval from **10 to 3600 seconds** in [configuration](configuration.md#4-set-the-refresh-interval).
+All sensors share two status reads every **30 seconds**. Set an interval from **10 to 3600 seconds** in [configuration](configuration.md#4-set-the-refresh-interval).
 
 ## Requests
 
 - `GET /status.asp` for device readings.
 - `GET /status_pon.asp` for PON readings.
 - When login is needed, `GET /admin/login.asp` and `POST /boaform/admin/formLogin`.
-- After successfully reading both pages, `POST /boaform/admin/formLogout` with `save=Logout` and `submit-url=/admin/logout.asp`.
+- Only when **Session Settings → Log out after a successful poll** is enabled, `POST /boaform/admin/formLogout` with `save=Logout` and `submit-url=/admin/logout.asp` after successfully reading both pages.
 
 HTTP Basic authentication is also supported. The integration does not change device settings or submit Refresh forms.
 
-Logout runs after every successful poll, including setup validation, anonymous access, HTTP Basic, and form login. Partial field errors still count as a successful poll. Failed status reads do not trigger logout. The next poll signs in again if needed; requests for one client are serialized through logout.
+Logout is disabled by default (`logout_after_poll: false`), including for existing entries without this option. Sessions are reused where the firmware supports it. Devices may share sessions between clients, so enabling logout can also terminate another client's web session.
+
+When enabled, logout runs after every successful poll for anonymous access, HTTP Basic, and form login. Partial field errors still count as a successful poll. Failed status reads do not trigger logout. Initial setup validation uses the disabled default; reconfiguration and reauthentication honor the saved setting. The next poll signs in again if needed; requests for one client are serialized through logout.
 
 The captured success response contains `OK: logout successfully!`. A failed or unconfirmed logout is noncritical: fresh readings remain available, a warning is logged, and no reauthentication prompt is raised. Session cookies are cleared after confirmed logout; otherwise they are retained for the next poll, which tries logout again after reading status.
 

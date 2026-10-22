@@ -18,7 +18,7 @@ For later runs:
 
 Checks cover metadata, dependencies, formatting, integration behavior, and the dashboard. Logs are saved in `.test-results/`.
 
-EPON tests use sanitized captures in `tests/fixtures/epon_*.html` and cover mode changes, dynamic LLID indices, isolated field errors, and GPON regression checks. Logout tests cover the captured POST/response, repeated login, and noncritical failures. These simulations do not establish live EPON compatibility.
+EPON tests use sanitized captures in `tests/fixtures/epon_*.html` and cover mode changes, dynamic LLID indices, oversized integer conversion, isolated field errors, and GPON regression checks. Session tests cover default session reuse, the logout option, the captured POST/response, repeated login, and noncritical failures. These simulations do not establish live EPON compatibility.
 
 ## Test the real stick
 

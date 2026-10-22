@@ -13,6 +13,7 @@ import aiohttp
 from yarl import URL
 
 from .const import (
+    DEFAULT_LOGOUT_AFTER_POLL,
     DEVICE_STATUS_PATH,
     LOGIN_FORM_PATH,
     LOGIN_PAGE_PATH,
@@ -276,19 +277,26 @@ def parse_pon_status_page(
     for row in table[2:]:
         if len(row) != 2 or not re.fullmatch(r"[0-9]+", row[0]):
             raise OnuParseError("Invalid EPON LLID index")
-        key = f"epon_llid_{int(row[0])}_status"
+        try:
+            index = int(row[0])
+        except ValueError as err:
+            raise OnuParseError("Invalid EPON LLID index") from err
+        key = f"epon_llid_{index}_status"
         if key in values:
             raise OnuParseError("Duplicate EPON LLID index")
         raw = row[1]
         if raw.casefold() in _UNKNOWN_VALUES:
             values[key] = None
-        elif re.fullmatch(r"[0-9]+", raw):
-            # Preserve firmware codes; they are not GPON O1–O7 states.
-            values[key] = int(raw)
         else:
-            values[key] = None
-            if field_errors is not None:
-                field_errors[key] = f"Invalid EPON LLID status for index {row[0]}: {raw!r}"
+            try:
+                if not re.fullmatch(r"[0-9]+", raw):
+                    raise ValueError("Expected a nonnegative integer")
+                # Preserve firmware codes; they are not GPON O1–O7 states.
+                values[key] = int(raw)
+            except ValueError:
+                values[key] = None
+                if field_errors is not None:
+                    field_errors[key] = f"Invalid EPON LLID status for index {index}: {raw!r}"
     return "epon", values
 
 
@@ -369,7 +377,7 @@ class _LogoutResultParser(HTMLParser):
 
 
 class OnuClient:
-    """Read status pages and close the management session after successful reads."""
+    """Read status pages, optionally logging out after successful reads."""
 
     def __init__(
         self,
@@ -377,11 +385,14 @@ class OnuClient:
         host: str,
         username: str = "",
         password: str = "",
+        *,
+        logout_after_poll: bool = DEFAULT_LOGOUT_AFTER_POLL,
     ) -> None:
         self._session = session
         self.host = normalize_host(host)
         self._username = username
         self._password = password
+        self._logout_after_poll = logout_after_poll
         self._lock = asyncio.Lock()
         self._field_errors: dict[str, str] = {}
         # Home Assistant's shared HTTP session must not own this device's login
@@ -524,7 +535,7 @@ class OnuClient:
         )
 
     async def async_get_status(self) -> OnuStatus:
-        """Read a complete snapshot, then log out before releasing the poll lock."""
+        """Read a snapshot, then optionally log out before releasing the poll lock."""
         async with self._lock:
             try:
                 status = await self._async_read_status()
@@ -536,10 +547,11 @@ class OnuClient:
                     raise OnuAuthError(
                         "Login was rejected. Check the username and password"
                     ) from err
-            try:
-                await self._async_logout()
-            except OnuLogoutError:
-                _LOGGER.warning(
-                    "Unable to confirm ONU logout after reading status; keeping readings"
-                )
+            if self._logout_after_poll:
+                try:
+                    await self._async_logout()
+                except OnuLogoutError:
+                    _LOGGER.warning(
+                        "Unable to confirm ONU logout after reading status; keeping readings"
+                    )
             return status

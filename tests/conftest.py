@@ -1,5 +1,6 @@
 """Real Home Assistant and a local read-only ONU test server."""
 
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,18 @@ from homeassistant.loader import async_setup as async_setup_loader
 from homeassistant.setup import async_setup_component
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture
+def oversized_integer():
+    """Exercise Python's real conversion limit, restoring it after the test."""
+    previous = sys.get_int_max_str_digits()
+    limit = sys.int_info.str_digits_check_threshold
+    sys.set_int_max_str_digits(limit)
+    try:
+        yield "9" * (limit + 1)
+    finally:
+        sys.set_int_max_str_digits(previous)
 
 
 @pytest.fixture

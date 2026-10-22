@@ -21,7 +21,7 @@ from custom_components.xpon_onu_stick.api import (
     OnuStatus,
     parse_status_page,
 )
-from custom_components.xpon_onu_stick.const import DOMAIN
+from custom_components.xpon_onu_stick.const import CONF_LOGOUT_AFTER_POLL, DOMAIN
 
 
 def sensor_for_key(hass, entry, key):
@@ -37,6 +37,24 @@ async def add_device(hass, host):
     assert result["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
     return result["result"]
+
+
+async def set_session_option(hass, entry, enabled):
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["menu_options"] == ["polling", "status_limits", "session"]
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "session"}
+    )
+    serialized = FlowManagerIndexView(hass.config_entries.options)._prepare_result_json(result)
+    field = serialized["data_schema"][0]
+    assert field["name"] == CONF_LOGOUT_AFTER_POLL
+    assert field["selector"] == {"boolean": {}}
+    assert field["default"] is entry.options.get(CONF_LOGOUT_AFTER_POLL, False)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_LOGOUT_AFTER_POLL: enabled}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
 
 
 async def test_initial_setup_requires_an_address_and_never_uses_a_fallback(hass):
@@ -89,7 +107,6 @@ async def test_setup_all_readings_and_friendly_statuses_and_unload(hass, onu_ser
         == [
             ("GET", "/status.asp", None),
             ("GET", "/status_pon.asp", None),
-            ("POST", "/boaform/admin/formLogout", None),
         ]
         * 2
     )
@@ -135,7 +152,6 @@ async def test_setup_captured_epon_and_unload(hass, onu_server, epon_device_html
         == [
             ("GET", "/status.asp", None),
             ("GET", "/status_pon.asp", None),
-            ("POST", "/boaform/admin/formLogout", None),
         ]
         * 2
     )
@@ -165,7 +181,6 @@ async def test_epon_refresh_and_new_llid_indices(hass, onu_server, epon_device_h
     assert requests == [
         ("GET", "/status.asp", None),
         ("GET", "/status_pon.asp", None),
-        ("POST", "/boaform/admin/formLogout", None),
     ]
     state["pon"] = epon_pon_html
     await entry.runtime_data.async_refresh()
@@ -240,6 +255,7 @@ async def test_epon_partial_errors_still_update_and_logout(
     host, state, requests = onu_server
     state.update(device=epon_device_html, pon=epon_pon_html)
     entry = await add_device(hass, host)
+    await set_session_option(hass, entry, True)
     state["logout_status"] = logout_status
     state["pon"] = (
         epon_pon_html.replace("Rx Power", "Missing")
@@ -286,6 +302,40 @@ async def test_failed_poll_marks_every_sensor_unavailable_then_recovers(hass, on
     assert hass.states.get("sensor.aot5222zy_onu_registration_status").state == "connected"
 
 
+@pytest.mark.parametrize("field", ["index", "status"])
+async def test_oversized_llid_conversion_failure_and_recovery(
+    hass, onu_server, epon_pon_html, oversized_integer, field
+):
+    host, state, _ = onu_server
+    state["pon"] = epon_pon_html
+    entry = await add_device(hass, host)
+    if field == "index":
+        state["pon"] = epon_pon_html.replace(
+            "<b>0</b></font></td>", f"<b>{oversized_integer}</b></font></td>", 1
+        )
+    else:
+        state["pon"] = epon_pon_html.replace(
+            "<b>1</b></font></td><br>", f"<b>{oversized_integer}</b></font></td><br>", 1
+        )
+    await entry.runtime_data.async_refresh()
+    if field == "index":
+        assert not entry.runtime_data.last_update_success
+        assert all(sensor.state == "unavailable" for sensor in hass.states.async_all("sensor"))
+    else:
+        assert entry.runtime_data.last_update_success
+        llid = sensor_for_key(hass, entry, "epon_llid_0_status")
+        assert llid.state == "unknown"
+        assert "Invalid EPON LLID status" in llid.attributes["parse_error"]
+        assert sensor_for_key(hass, entry, "rx_power").state == "-18.1"
+        assert sensor_for_key(hass, entry, "epon_llid_1_status").state == "0"
+    state["pon"] = epon_pon_html
+    await entry.runtime_data.async_refresh()
+    assert entry.runtime_data.last_update_success
+    llid = sensor_for_key(hass, entry, "epon_llid_0_status")
+    assert llid.state == "1"
+    assert "parse_error" not in llid.attributes
+
+
 @pytest.mark.parametrize("mode", ["gpon", "epon"])
 async def test_logout_failure_does_not_block_setup_or_updates(
     hass, onu_server, epon_pon_html, mode
@@ -295,8 +345,10 @@ async def test_logout_failure_does_not_block_setup_or_updates(
         state["pon"] = epon_pon_html
     state["logout_status"] = 403
     entry = await add_device(hass, host)
+    assert not state["logout_posts"]
+    await set_session_option(hass, entry, True)
     assert entry.state is ConfigEntryState.LOADED
-    assert len(state["logout_posts"]) == 2  # Flow validation and initial coordinator refresh.
+    assert len(state["logout_posts"]) == 1  # First refresh after enabling logout.
     state["pon"] = state["pon"].replace("37.277344 C" if mode == "gpon" else "41.0 C", "42 C")
     await entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
@@ -304,10 +356,10 @@ async def test_logout_failure_does_not_block_setup_or_updates(
     assert sensor_for_key(hass, entry, "temperature").state == "42.0"
     assert not hass.config_entries.flow.async_progress()
     assert all(sensor.state != "unavailable" for sensor in hass.states.async_all("sensor"))
-    assert len(state["logout_posts"]) == 3
+    assert len(state["logout_posts"]) == 2
     state["logout_status"] = 200
     await entry.runtime_data.async_refresh()
-    assert len(state["logout_posts"]) == 4
+    assert len(state["logout_posts"]) == 3
     assert entry.runtime_data.last_update_success
 
 
@@ -490,7 +542,6 @@ async def test_friendly_statuses_follow_new_readings_on_the_shared_poll(hass, on
     assert requests == [
         ("GET", "/status.asp", None),
         ("GET", "/status_pon.asp", None),
-        ("POST", "/boaform/admin/formLogout", None),
     ]
 
 
@@ -580,6 +631,62 @@ async def test_options_change_polling_interval_and_reload(hass, onu_server):
     assert len(hass.states.async_all("sensor")) == 22
 
 
+@pytest.mark.parametrize("mode", ["gpon", "epon"])
+async def test_session_option_toggles_logout_and_preserves_other_options(
+    hass, onu_server, epon_pon_html, mode
+):
+    host, state, requests = onu_server
+    if mode == "epon":
+        state["pon"] = epon_pon_html
+    entry = await add_device(hass, host)
+    assert not state["logout_posts"]
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_SCAN_INTERVAL: 60, "rx_power_min": -30}
+    )
+    await hass.async_block_till_done()
+    original_ids = {sensor.entity_id for sensor in hass.states.async_all("sensor")}
+    for enabled in (True, False):
+        old_coordinator = entry.runtime_data
+        requests.clear()
+        await set_session_option(hass, entry, enabled)
+        assert entry.runtime_data is not old_coordinator
+        assert entry.options == {
+            CONF_SCAN_INTERVAL: 60,
+            "rx_power_min": -30,
+            CONF_LOGOUT_AFTER_POLL: enabled,
+        }
+        assert entry.runtime_data.update_interval.total_seconds() == 60
+        await entry.runtime_data.async_refresh()
+        expected = [("GET", "/status.asp", None), ("GET", "/status_pon.asp", None)]
+        if enabled:
+            expected.append(("POST", "/boaform/admin/formLogout", None))
+        assert requests == expected * 2  # Reload and subsequent poll.
+        assert {sensor.entity_id for sensor in hass.states.async_all("sensor")} == original_ids
+        assert entry.runtime_data.last_update_success
+
+
+@pytest.mark.parametrize("step", ["reconfigure", "reauth"])
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_connection_validation_respects_session_option(hass, onu_server, step, enabled):
+    host, state, _ = onu_server
+    entry = await add_device(hass, host)
+    await set_session_option(hass, entry, enabled)
+    state["logout_posts"].clear()
+    if step == "reconfigure":
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": step, "entry_id": entry.entry_id}, data={CONF_HOST: host}
+        )
+    else:
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": step, "entry_id": entry.entry_id}, data=entry.data
+        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["reason"] == f"{step}_successful"
+    await hass.async_block_till_done()
+    assert entry.options[CONF_LOGOUT_AFTER_POLL] is enabled
+    assert len(state["logout_posts"]) == (2 if enabled else 0)
+
+
 async def open_status_limits(hass, entry):
     result = await hass.config_entries.options.async_init(entry.entry_id)
     return await hass.config_entries.options.async_configure(
@@ -609,6 +716,7 @@ async def test_status_limit_form_serializes_numeric_fields_and_optional_bias(has
 async def test_status_limits_reload_sensors_and_survive_polling_changes(hass, onu_server):
     host, _, requests = onu_server
     entry = await add_device(hass, host)
+    await set_session_option(hass, entry, True)
     ids_before = {sensor.entity_id for sensor in hass.states.async_all("sensor")}
     old_coordinator = entry.runtime_data
     result = await open_status_limits(hass, entry)
@@ -632,6 +740,7 @@ async def test_status_limits_reload_sensors_and_survive_polling_changes(hass, on
     await hass.config_entries.options.async_configure(result["flow_id"], {CONF_SCAN_INTERVAL: 60})
     await hass.async_block_till_done()
     assert entry.options["rx_power_min"] == -30
+    assert entry.options[CONF_LOGOUT_AFTER_POLL] is True
     assert entry.options["bias_current_min"] == 5
     assert entry.options["bias_current_max"] == 20
     assert entry.runtime_data.update_interval.total_seconds() == 60

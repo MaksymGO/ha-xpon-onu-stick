@@ -22,7 +22,7 @@ Tested with the **ODI DFP-34X-2C2** on firmware **V1.0-220923**. Requires Home A
 - Adjust refresh intervals and status limits.
 - Use the included dashboard card with a 24-hour Rx power trend.
 - Keep valid readings available when another field cannot be parsed.
-- Log out after each successful poll; logout failures do not interrupt sensor updates.
+- Optionally log out after successful polls through **Session Settings** (disabled by default); logout failures do not interrupt sensor updates.
 
 ## Quick Start
 

@@ -19,7 +19,7 @@ async def test_form_login_uses_actual_fields_and_logs_out_each_poll(onu_server, 
     # HA's shared session can have no cookie storage. The client must retain
     # IP-address cookies itself, independently of the shared session.
     async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
-        client = OnuClient(session, host, "reader", "secret")
+        client = OnuClient(session, host, "reader", "secret", logout_after_poll=True)
         assert (await client.async_get_status()).values["onu_state"] == "O5"
         assert (await client.async_get_status()).values["rx_power"] == -26.382721
     assert (
@@ -51,7 +51,7 @@ async def test_automatically_renews_expired_session(onu_server):
     host, state, _ = onu_server
     state["form_auth"] = ("reader", "secret")
     async with aiohttp.ClientSession() as session:
-        client = OnuClient(session, host, "reader", "secret")
+        client = OnuClient(session, host, "reader", "secret", logout_after_poll=True)
         await client.async_get_status()
         state["sessions"].clear()
         assert (await client.async_get_status()).values["onu_state"] == "O5"
@@ -218,18 +218,14 @@ async def test_session_expiry_between_pages_during_an_outage(hass, onu_server, o
     )
     await hass.async_block_till_done()
     entry = result["result"]
-    # Successful setup logged out. Establish a session before simulating its
-    # expiry between pages, so the poll exercises one automatic renewal.
-    await entry.runtime_data.client._async_login()
     logins_before = len(state["login_posts"])
-    logouts_before = len(state["logout_posts"])
     state["pon"] = outage_pon_html
     state["expire_before_pon"] = True
     await entry.runtime_data.async_refresh()
     assert entry.runtime_data.last_update_success
     assert len(state["login_posts"]) == logins_before + 1
-    assert len(state["logout_posts"]) == logouts_before + 1
-    assert not state["sessions"]
+    assert not state["logout_posts"]
+    assert state["sessions"]
     assert hass.states.get("sensor.aot5222zy_tx_power").state == "unknown"
     assert "-inf dBm" in hass.states.get("sensor.aot5222zy_tx_power").attributes["parse_error"]
     assert hass.states.get("sensor.aot5222zy_rx_power").state == "-40.0"

@@ -125,6 +125,25 @@ def test_invalid_llid_status_only_affects_that_index(epon_pon_html, raw):
     assert set(errors) == {"epon_llid_0_status"}
 
 
+def test_oversized_llid_index_raises_parse_error(epon_pon_html, oversized_integer):
+    html = replace_llid_table(epon_pon_html, llid_table([(oversized_integer, 1)]))
+    with pytest.raises(OnuParseError, match="Invalid EPON LLID index"):
+        parse_pon_status_page(html)
+
+
+def test_oversized_llid_status_is_isolated(epon_pon_html, oversized_integer):
+    html = replace_llid_table(epon_pon_html, llid_table([(0, oversized_integer), (1, 0)]))
+    errors = {}
+    mode, values = parse_pon_status_page(html, field_errors=errors)
+    assert mode == "epon"
+    assert values["epon_llid_0_status"] is None
+    assert values["epon_llid_1_status"] == 0
+    assert values["rx_power"] == -18.1
+    assert set(errors) == {"epon_llid_0_status"}
+    assert "Invalid EPON LLID status" in errors["epon_llid_0_status"]
+    assert parse_pon_status_page(html)[1] == values  # Also safe without diagnostics.
+
+
 @pytest.mark.parametrize(
     "table",
     [
@@ -205,7 +224,6 @@ async def test_client_reads_captured_epon_pages(onu_server, epon_device_html, ep
     assert requests == [
         ("GET", "/status.asp", None),
         ("GET", "/status_pon.asp", None),
-        ("POST", "/boaform/admin/formLogout", None),
     ]
 
 
@@ -229,7 +247,7 @@ async def test_epon_authentication_and_session_expiry(
     else:
         state["form_auth"] = ("reader", "secret")
     async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
-        client = OnuClient(session, host, "reader", "secret")
+        client = OnuClient(session, host, "reader", "secret", logout_after_poll=True)
         assert (await client.async_get_status()).pon_mode == "epon"
         if auth_type == "form":
             await client._async_login()
@@ -276,4 +294,4 @@ async def test_missing_epon_device_field_is_isolated(
     assert status.values[key] is None
     assert status.values["rx_power"] == -18.1
     assert set(status.field_errors) == {key}
-    assert len(state["logout_posts"]) == 1
+    assert not state["logout_posts"]

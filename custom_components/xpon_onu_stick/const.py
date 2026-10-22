@@ -1,6 +1,8 @@
 """Constants for XPON ONU Stick."""
 
 DOMAIN = "xpon_onu_stick"
+CONF_LOGOUT_AFTER_POLL = "logout_after_poll"
+DEFAULT_LOGOUT_AFTER_POLL = False
 DEFAULT_SCAN_INTERVAL = 30
 MIN_SCAN_INTERVAL = 10
 MAX_SCAN_INTERVAL = 3600
