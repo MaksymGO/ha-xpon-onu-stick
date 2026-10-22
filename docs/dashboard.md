@@ -29,7 +29,7 @@ In EPON mode, common optical and system readings are available to the card. Its 
 
 Open **Settings → Dashboards → ⋮ → Resources**. Check for this resource:
 
-- URL: `/xpon_onu_stick/xpon-onu-stick-card.js?v=0.5.1`
+- URL: `/xpon_onu_stick/xpon-onu-stick-card.js?v=6.0.0`
 - Type: **JavaScript module**
 
 Add it if missing, then reload the browser page. Enable **Advanced mode** in your profile if Resources is hidden.
