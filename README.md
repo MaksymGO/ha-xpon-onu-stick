@@ -52,6 +52,10 @@ Edit a dashboard, select **Add card**, and search for **XPON ONU Stick**. Home A
 - [Screenshots](docs/screenshots.md): Dashboard, sensors, options, and ONU status pages.
 - [Development](docs/development.md): Tests, live device checks, and dashboard previews.
 
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
+
 ## Support
 
 If this project has been useful to you, consider supporting its continued development.

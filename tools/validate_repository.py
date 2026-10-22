@@ -1,4 +1,4 @@
-"""Check the repository layout, HACS metadata, translations, and local brand images."""
+"""Check repository licensing, layout, HACS metadata, translations, and brand images."""
 
 import json
 import re
@@ -13,6 +13,10 @@ REPOSITORY = "https://github.com/vineetchoudhary/ha-xpon-onu-stick"
 
 def validate_repository(root: Path) -> None:
     """Raise ValueError for packaging errors before running the simulator suite."""
+    license_path = root / "LICENSE"
+    if not license_path.is_file() or not license_path.read_text().strip():
+        raise ValueError("HACS requires a nonempty LICENSE file in the repository root.")
+
     components = root / "custom_components"
     integrations = sorted(
         path for path in components.iterdir() if (path / "manifest.json").is_file()
@@ -65,4 +69,6 @@ if __name__ == "__main__":
         validate_repository(ROOT)
     except (OSError, ValueError, KeyError, TypeError) as err:
         sys.exit(f"Repository validation failed: {err}")
-    print("Repository layout, HACS metadata, translations, and brand images are valid.")
+    print(
+        "License file, repository layout, HACS metadata, translations, and brand images are valid."
+    )
