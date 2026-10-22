@@ -1,6 +1,8 @@
 """Test real captured HTML and transport boundaries."""
 
 import asyncio
+import logging
+import re
 from unittest.mock import patch
 
 import aiohttp
@@ -49,18 +51,104 @@ def test_live_pon_fixture(pon_html):
 @pytest.mark.parametrize("raw", ["", "-", "--", "N/A", "unknown"])
 def test_unknown_reading_is_not_zero(pon_html, raw):
     html = pon_html.replace("-26.382721  dBm", raw)
-    assert parse_status_page(html, PON_FIELDS)["rx_power"] is None
+    errors = {}
+    assert parse_status_page(html, PON_FIELDS, field_errors=errors)["rx_power"] is None
+    assert errors == {}
 
 
-@pytest.mark.parametrize("raw", ["NaN", "Infinity", "bad", "3.24 mA", "3.24 V corrupt"])
+@pytest.mark.parametrize(
+    "raw", ["NaN", "Infinity", "-inf V", "bad", "3.24 mA", "3.24 V corrupt", "9" * 400]
+)
 def test_invalid_numeric_data(pon_html, raw):
-    with pytest.raises(OnuParseError):
-        parse_status_page(pon_html.replace("3.256100 V", raw), PON_FIELDS)
+    errors = {}
+    values = parse_status_page(pon_html.replace("3.256100 V", raw), PON_FIELDS, field_errors=errors)
+    assert values == {**parse_status_page(pon_html, PON_FIELDS), "voltage": None}
+    assert set(errors) == {"voltage"}
+    assert "number for voltage" in errors["voltage"]
+
+
+@pytest.mark.parametrize("raw", ["-1", "0.5", "NaN", "bad"])
+def test_invalid_onu_id_does_not_discard_other_readings(pon_html, raw):
+    html = pon_html.replace("<font size=2>0</td>", f"<font size=2>{raw}</td>")
+    errors = {}
+    values = parse_status_page(html, PON_FIELDS, field_errors=errors)
+    assert values == {**parse_status_page(pon_html, PON_FIELDS), "onu_id": None}
+    assert set(errors) == {"onu_id"}
+
+
+@pytest.mark.parametrize(
+    "fixture_name, fields, key, previous, unit",
+    [
+        ("device_html", DEVICE_FIELDS, "cpu_usage", "0%", "%"),
+        ("device_html", DEVICE_FIELDS, "memory_usage", "50%", "%"),
+        ("pon_html", PON_FIELDS, "temperature", "37.277344 C", "C"),
+        ("pon_html", PON_FIELDS, "voltage", "3.256100 V", "V"),
+        ("pon_html", PON_FIELDS, "tx_power", "1.939900  dBm", "dBm"),
+        ("pon_html", PON_FIELDS, "rx_power", "-26.382721  dBm", "dBm"),
+        ("pon_html", PON_FIELDS, "bias_current", "11.150000 mA", "mA"),
+        ("pon_html", PON_FIELDS, "onu_id", "0", ""),
+    ],
+)
+@pytest.mark.parametrize("raw", ["inf", "-inf", "+Infinity", "NaN", "-nan", "nan(0x123)"])
+def test_non_finite_formats_are_isolated_for_every_numeric_field(
+    request, fixture_name, fields, key, previous, unit, raw
+):
+    original = request.getfixturevalue(fixture_name)
+    html = original.replace(f">{previous}<", f">{raw} {unit}<", 1)
+    assert html != original
+    errors = {}
+    values = parse_status_page(html, fields, field_errors=errors)
+    assert values == {**parse_status_page(original, fields), key: None}
+    assert set(errors) == {key}
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("0", 0.0),
+        ("+0.0 dBm", 0.0),
+        ("-0.0 dBm", 0.0),
+        ("-40.000000 dBm", -40.0),
+        ("+.5 DBM", 0.5),
+        ("1.dBm", 1.0),
+        ("-26.5&nbsp;dBm", -26.5),
+    ],
+)
+def test_finite_optical_formats_keep_actual_values(raw, expected):
+    errors = {}
+    html = f"<table><tr><td>Rx Power</td><td>{raw}</td></tr></table>"
+    assert parse_status_page(html, {"rx power": "rx_power"}, field_errors=errors) == {
+        "rx_power": expected
+    }
+    assert errors == {}
+
+
+@pytest.mark.parametrize("raw", ["0", "254", "255"])
+def test_onu_ids_including_unassigned_value_are_preserved(pon_html, raw):
+    html = pon_html.replace(">0<", f">{raw}<")
+    assert parse_status_page(html, PON_FIELDS)["onu_id"] == int(raw)
+
+
+@pytest.mark.parametrize(
+    "fixture_name, fields", [("device_html", DEVICE_FIELDS), ("pon_html", PON_FIELDS)]
+)
+def test_each_missing_field_is_isolated(request, fixture_name, fields):
+    html = request.getfixturevalue(fixture_name)
+    baseline = parse_status_page(html, fields)
+    for label, key in fields.items():
+        errors = {}
+        # Changing the label simulates a missing or unsupported firmware row.
+        changed = re.sub(re.escape(label), "Unsupported Field", html, flags=re.IGNORECASE)
+        values = parse_status_page(changed, fields, field_errors=errors)
+        assert values == {**baseline, key: None}, key
+        assert errors == {key: f"Status page is missing field: {label}"}
 
 
 def test_missing_fields_and_commented_rows(pon_html):
-    with pytest.raises(OnuParseError):
-        parse_status_page(pon_html.replace("Rx Power", "Receive Power"), PON_FIELDS)
+    assert (
+        parse_status_page(pon_html.replace("Rx Power", "Receive Power"), PON_FIELDS)["rx_power"]
+        is None
+    )
     html = "<!-- <tr><td>Rx Power</td><td>0 dBm</td></tr> -->" + pon_html
     assert parse_status_page(html, PON_FIELDS)["rx_power"] == -26.382721
 
@@ -125,6 +213,55 @@ async def test_client_reads_two_pages_then_logs_out(onu_server):
         ("GET", "/status_pon.asp", None),
         ("POST", "/boaform/admin/formLogout", None),
     ]
+
+
+async def test_outage_errors_are_logged_once_and_reset_after_recovery(
+    onu_server, outage_pon_html, caplog
+):
+    host, state, requests = onu_server
+    healthy_pon = state["pon"]
+    state["pon"] = outage_pon_html
+    caplog.set_level(logging.INFO, logger="custom_components.xpon_onu_stick.api")
+    async with aiohttp.ClientSession() as session:
+        client = OnuClient(session, host)
+        for _ in range(2):
+            status = await client.async_get_status()
+            assert status.values["tx_power"] is None
+            assert status.values["rx_power"] == -40.0
+            assert status.values["onu_state"] == "O1"
+            assert status.values["bias_current"] == 0.0
+            assert status.field_errors == {"tx_power": "Invalid number for tx power: '-inf dBm'"}
+        errors = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert len(errors) == 1
+        assert "tx power" in errors[0].message
+        assert host in errors[0].message
+        state["pon"] = healthy_pon
+        recovered = await client.async_get_status()
+        assert recovered.field_errors == {}
+        assert recovered.values["tx_power"] == 1.9399
+        assert "Parsing error cleared for tx_power" in caplog.text
+        state["pon"] = outage_pon_html
+        await client.async_get_status()
+        errors = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert len(errors) == 2
+    assert (
+        requests
+        == [
+            ("GET", "/status.asp", None),
+            ("GET", "/status_pon.asp", None),
+            ("POST", "/boaform/admin/formLogout", None),
+        ]
+        * 4
+    )
+
+
+@pytest.mark.parametrize("mac", ["not-a-mac", "N/A"])
+async def test_invalid_identity_still_rejects_the_snapshot(onu_server, mac):
+    host, state, _ = onu_server
+    state["device"] = state["device"].replace("020000000001", mac)
+    async with aiohttp.ClientSession() as session:
+        with pytest.raises(OnuParseError):
+            await OnuClient(session, host).async_get_status()
 
 
 async def test_http_basic_auth(onu_server):

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "card-preview",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["tools/card_ui.py", "debug", "--no-open", "--port", "8765"],
+      "port": 8765
+    }
+  ]
+}

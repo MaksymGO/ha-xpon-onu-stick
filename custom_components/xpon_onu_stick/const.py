@@ -13,3 +13,6 @@ LOGIN_PAGE_PATH = "/admin/login.asp"
 LOGIN_FORM_PATH = "/boaform/admin/formLogin"
 LOGOUT_PAGE_PATH = "/admin/logout.asp"
 LOGOUT_FORM_PATH = "/boaform/admin/formLogout"
+
+# Dashboard card served by the integration and loaded by the frontend.
+CARD_URL = f"/{DOMAIN}/xpon-onu-stick-card.js"

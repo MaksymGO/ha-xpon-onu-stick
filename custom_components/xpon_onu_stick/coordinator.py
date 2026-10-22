@@ -16,7 +16,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class OnuCoordinator(DataUpdateCoordinator[OnuStatus]):
-    """A complete device/PON snapshot shared by every sensor."""
+    """Share fresh device/PON readings and per-field errors with every sensor."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, client: OnuClient) -> None:
         super().__init__(

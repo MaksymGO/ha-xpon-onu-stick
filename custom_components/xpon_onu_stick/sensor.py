@@ -36,20 +36,20 @@ GPON_SENSOR_KEYS = {*GPON_FIELDS.values(), "onu_registration_status"}
 SENSORS = (
     SensorEntityDescription(
         key="device_name",
-        name="Device name",
+        translation_key="device_name",
         icon="mdi:router-network",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
-    SensorEntityDescription(key="uptime", name="Uptime", icon="mdi:timer-outline"),
+    SensorEntityDescription(key="uptime", translation_key="uptime", icon="mdi:timer-outline"),
     SensorEntityDescription(
         key="firmware_version",
-        name="Firmware version",
+        translation_key="firmware_version",
         icon="mdi:chip",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SensorEntityDescription(
         key="cpu_usage",
-        name="CPU usage",
+        translation_key="cpu_usage",
         icon="mdi:cpu-64-bit",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -57,7 +57,7 @@ SENSORS = (
     ),
     SensorEntityDescription(
         key="memory_usage",
-        name="Memory usage",
+        translation_key="memory_usage",
         icon="mdi:memory",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -65,25 +65,25 @@ SENSORS = (
     ),
     SensorEntityDescription(
         key="ip_address",
-        name="IP address",
+        translation_key="ip_address",
         icon="mdi:ip-network",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SensorEntityDescription(
         key="subnet_mask",
-        name="Subnet mask",
+        translation_key="subnet_mask",
         icon="mdi:ip-network-outline",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SensorEntityDescription(
         key="mac_address",
-        name="MAC address",
+        translation_key="mac_address",
         icon="mdi:network-outline",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SensorEntityDescription(
         key="temperature",
-        name="Temperature",
+        translation_key="temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         state_class=SensorStateClass.MEASUREMENT,
@@ -91,7 +91,7 @@ SENSORS = (
     ),
     SensorEntityDescription(
         key="voltage",
-        name="Voltage",
+        translation_key="voltage",
         device_class=SensorDeviceClass.VOLTAGE,
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         state_class=SensorStateClass.MEASUREMENT,
@@ -99,7 +99,7 @@ SENSORS = (
     ),
     SensorEntityDescription(
         key="tx_power",
-        name="Tx power",
+        translation_key="tx_power",
         icon="mdi:upload-network",
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
         native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
@@ -108,7 +108,7 @@ SENSORS = (
     ),
     SensorEntityDescription(
         key="rx_power",
-        name="Rx power",
+        translation_key="rx_power",
         icon="mdi:download-network",
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
         native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
@@ -117,17 +117,19 @@ SENSORS = (
     ),
     SensorEntityDescription(
         key="bias_current",
-        name="Bias current",
+        translation_key="bias_current",
         device_class=SensorDeviceClass.CURRENT,
         native_unit_of_measurement=UnitOfElectricCurrent.MILLIAMPERE,
         suggested_unit_of_measurement=UnitOfElectricCurrent.MILLIAMPERE,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=2,
     ),
-    SensorEntityDescription(key="onu_state", name="ONU state", icon="mdi:access-point-network"),
-    SensorEntityDescription(key="onu_id", name="ONU ID", icon="mdi:identifier"),
     SensorEntityDescription(
-        key="loid_status", name="LOID status", icon="mdi:account-check-outline"
+        key="onu_state", translation_key="onu_state", icon="mdi:access-point-network"
+    ),
+    SensorEntityDescription(key="onu_id", translation_key="onu_id", icon="mdi:identifier"),
+    SensorEntityDescription(
+        key="loid_status", translation_key="loid_status", icon="mdi:account-check-outline"
     ),
 )
 STATUS_SENSORS = tuple(
@@ -207,7 +209,7 @@ class OnuSensor(CoordinatorEntity[OnuCoordinator], SensorEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.entry.unique_id)},
             connections={(CONNECTION_NETWORK_MAC, coordinator.data.mac_address)},
-            name=coordinator.data.name,
+            name=coordinator.data.values["device_name"] or coordinator.entry.title,
             model=coordinator.data.values["device_name"],
             sw_version=coordinator.data.values["firmware_version"],
             configuration_url=coordinator.client.host,
@@ -226,13 +228,21 @@ class OnuSensor(CoordinatorEntity[OnuCoordinator], SensorEntity):
     def native_value(self) -> str | float | int | None:
         return self.coordinator.data.values.get(self.entity_description.key)
 
+    def _parse_error_attributes(self, key: str) -> dict[str, str]:
+        """Expose the parsing problem on only the affected reading/status."""
+        error = self.coordinator.data.field_errors.get(key)
+        return {"parse_error": error} if error else {}
+
     @property
-    def extra_state_attributes(self) -> dict:
-        attributes = {"pon_mode": self.coordinator.data.pon_mode}
+    def extra_state_attributes(self) -> dict | None:
+        attributes = {
+            "pon_mode": self.coordinator.data.pon_mode,
+            **self._parse_error_attributes(self.entity_description.key),
+        }
         if self.entity_description.key == "onu_state":
             status = registration_status(self.coordinator.data.values.get("onu_state"))
             attributes["description"] = status.attributes["description"]
-        return attributes
+        return attributes or None
 
 
 class OnuStatusSensor(OnuSensor):
@@ -255,4 +265,13 @@ class OnuStatusSensor(OnuSensor):
 
     @property
     def extra_state_attributes(self) -> dict:
-        return {**super().extra_state_attributes, **self._status.attributes}
+        key = (
+            "onu_state"
+            if self.entity_description.key == "onu_registration_status"
+            else self.entity_description.key.removesuffix("_status")
+        )
+        return {
+            "pon_mode": self.coordinator.data.pon_mode,
+            **self._status.attributes,
+            **self._parse_error_attributes(key),
+        }

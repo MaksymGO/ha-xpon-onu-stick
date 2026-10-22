@@ -6,7 +6,7 @@ import asyncio
 import logging
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 
 import aiohttp
@@ -179,6 +179,29 @@ _NUMBER_UNITS = {
 _UNKNOWN_VALUES = {"", "-", "--", "n/a", "na", "unknown", "not available"}
 
 
+def _parse_value(raw: str, label: str, key: str) -> str | float | int | None:
+    """Validate one reading without substituting a fabricated number."""
+    if raw.casefold() in _UNKNOWN_VALUES:
+        return None
+    if key not in _NUMBER_UNITS:
+        return raw
+    match = re.fullmatch(
+        rf"([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(?:{_NUMBER_UNITS[key]})?",
+        raw,
+        re.IGNORECASE,
+    )
+    if not match:
+        raise OnuParseError(f"Invalid number for {label}: {raw!r}")
+    number = float(match[1])
+    if not math.isfinite(number):
+        raise OnuParseError(f"Non-finite number for {label}: {raw!r}")
+    if key == "onu_id":
+        if number < 0 or not number.is_integer():
+            raise OnuParseError(f"Invalid ONU ID: {raw!r}")
+        return int(number)
+    return number
+
+
 def _parse_status_table(html: str) -> _StatusTableParser:
     """Read table content, rejecting authentication pages first."""
     if re.search(r"<input\b[^>]*\btype\s*=\s*['\"]?password\b", html, re.IGNORECASE):
@@ -193,47 +216,38 @@ def _parse_status_table(html: str) -> _StatusTableParser:
 
 
 def _extract_fields(
-    parser: _StatusTableParser, fields: dict[str, str]
+    parser: _StatusTableParser,
+    fields: dict[str, str],
+    *,
+    field_errors: dict[str, str] | None = None,
 ) -> dict[str, str | float | int | None]:
-    """Validate and convert a required set of status rows."""
-    missing = fields.keys() - parser.rows.keys()
-    if missing:
-        raise OnuParseError(f"Status page is missing fields: {', '.join(sorted(missing))}")
-
+    """Convert each field independently without discarding other valid readings."""
     values: dict[str, str | float | int | None] = {}
     for label, key in fields.items():
-        raw = parser.rows[label]
-        if raw.casefold() in _UNKNOWN_VALUES:
+        try:
+            if label not in parser.rows:
+                raise OnuParseError(f"Status page is missing field: {label}")
+            values[key] = _parse_value(parser.rows[label], label, key)
+        except OnuParseError as err:
             values[key] = None
-            continue
-        if key not in _NUMBER_UNITS:
-            values[key] = raw
-            continue
-        match = re.fullmatch(
-            rf"([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(?:{_NUMBER_UNITS[key]})?",
-            raw,
-            re.IGNORECASE,
-        )
-        if not match:
-            raise OnuParseError(f"Invalid number for {label}")
-        number = float(match[1])
-        if not math.isfinite(number):
-            raise OnuParseError(f"Non-finite number for {label}")
-        if key == "onu_id":
-            if number < 0 or not number.is_integer():
-                raise OnuParseError("Invalid ONU ID")
-            values[key] = int(number)
-        else:
-            values[key] = number
+            if field_errors is not None:
+                field_errors[key] = str(err)
     return values
 
 
-def parse_status_page(html: str, fields: dict[str, str]) -> dict[str, str | float | int | None]:
-    """Extract the expected page fields. Reject login, error, or unrelated pages."""
-    return _extract_fields(_parse_status_table(html), fields)
+def parse_status_page(
+    html: str, fields: dict[str, str], *, field_errors: dict[str, str] | None = None
+) -> dict[str, str | float | int | None]:
+    """Extract readings independently. Reject login or unrelated pages as a whole."""
+    parser = _parse_status_table(html)
+    if not fields.keys() & parser.rows.keys():
+        raise OnuParseError("Status page has no supported fields")
+    return _extract_fields(parser, fields, field_errors=field_errors)
 
 
-def parse_pon_status_page(html: str) -> tuple[str, dict[str, str | float | int | None]]:
+def parse_pon_status_page(
+    html: str, *, field_errors: dict[str, str] | None = None
+) -> tuple[str, dict[str, str | float | int | None]]:
     """Recognize the GPON rows or the captured EPON LLID status table."""
     parser = _parse_status_table(html)
     epon_tables = [
@@ -242,11 +256,20 @@ def parse_pon_status_page(html: str) -> tuple[str, dict[str, str | float | int |
         if table and [cell.casefold() for cell in table[0]] == ["epon llid status"]
     ]
     if not epon_tables:
-        # Missing GPON rows must still fail, rather than imply EPON mode.
-        return "gpon", _extract_fields(parser, PON_FIELDS)
+        # Missing GPON readings are isolated, but never imply EPON mode.
+        has_gpon_heading = any(
+            [cell.casefold() for cell in row] == ["gpon status"]
+            for table in parser.tables
+            for row in table
+        )
+        if not PON_FIELDS.keys() & parser.rows.keys() or not (
+            has_gpon_heading or GPON_FIELDS.keys() & parser.rows.keys()
+        ):
+            raise OnuParseError("Status page has no recognized PON mode")
+        return "gpon", _extract_fields(parser, PON_FIELDS, field_errors=field_errors)
     if len(epon_tables) != 1 or GPON_FIELDS.keys() & parser.rows.keys():
         raise OnuParseError("Ambiguous PON status page")
-    values = _extract_fields(parser, OPTICAL_FIELDS)
+    values = _extract_fields(parser, OPTICAL_FIELDS, field_errors=field_errors)
     table = epon_tables[0]
     if len(table) < 3 or [cell.casefold() for cell in table[1]] != ["index", "status"]:
         raise OnuParseError("Invalid EPON LLID table")
@@ -263,22 +286,30 @@ def parse_pon_status_page(html: str) -> tuple[str, dict[str, str | float | int |
             # Preserve firmware codes; they are not GPON O1–O7 states.
             values[key] = int(raw)
         else:
-            raise OnuParseError("Invalid EPON LLID status")
+            values[key] = None
+            if field_errors is not None:
+                field_errors[key] = f"Invalid EPON LLID status for index {row[0]}: {raw!r}"
     return "epon", values
 
 
 @dataclass(frozen=True)
 class OnuStatus:
-    """One complete poll of both status pages."""
+    """One poll of both pages, with invalid readings isolated by field."""
 
     values: dict[str, str | float | int | None]
     mac_address: str
     pon_mode: str = "gpon"
+    field_errors: dict[str, str] = field(default_factory=dict)
 
     @property
     def name(self) -> str:
         """Use a stable display name when EPON firmware omits Device Name."""
-        return str(self.values.get("device_name") or f"XPON ONU {self.mac_address}")
+        fallback = (
+            f"XPON ONU {self.mac_address}"
+            if self.pon_mode == "epon"
+            else f"XPON ONU Stick ({self.mac_address})"
+        )
+        return str(self.values.get("device_name") or fallback)
 
 
 class _LoginFormParser(HTMLParser):
@@ -352,6 +383,7 @@ class OnuClient:
         self._username = username
         self._password = password
         self._lock = asyncio.Lock()
+        self._field_errors: dict[str, str] = {}
         # Home Assistant's shared HTTP session must not own this device's login
         # state. Keep cookies per client, accepting the ONU's numeric IP address.
         self._cookie_jar = aiohttp.CookieJar(unsafe=True)
@@ -458,21 +490,38 @@ class OnuClient:
 
     async def _async_read_status(self) -> OnuStatus:
         """Use sequential requests to keep the embedded server's load low."""
-        device_table = _parse_status_table(await self._request("GET", DEVICE_STATUS_PATH))
-        device = _extract_fields(
-            device_table,
-            {label: key for label, key in DEVICE_FIELDS.items() if label != "device name"},
+        field_errors: dict[str, str] = {}
+        device = parse_status_page(
+            await self._request("GET", DEVICE_STATUS_PATH),
+            DEVICE_FIELDS,
+            field_errors=field_errors,
         )
-        device["device_name"] = (
-            _extract_fields(device_table, {"device name": "device_name"})["device_name"]
-            if "device name" in device_table.rows
-            else None
+        mode, pon = parse_pon_status_page(
+            await self._request("GET", PON_STATUS_PATH), field_errors=field_errors
         )
-        mode, pon = parse_pon_status_page(await self._request("GET", PON_STATUS_PATH))
+        if mode == "epon":
+            # This firmware intentionally hides Device Name; use the MAC-based title.
+            field_errors.pop("device_name", None)
         mac = device["mac_address"]
-        if not isinstance(mac, str) or (mode == "gpon" and not device["device_name"]):
+        if not isinstance(mac, str):
             raise OnuParseError("Device identity is missing")
-        return OnuStatus(values={**device, **pon}, mac_address=normalize_mac(mac), pon_mode=mode)
+        identity = normalize_mac(mac)
+        for key, error in field_errors.items():
+            if self._field_errors.get(key) != error:
+                _LOGGER.error(
+                    "%s at %s. This reading is unknown. Other readings will continue updating",
+                    error,
+                    self.host,
+                )
+        for key in self._field_errors.keys() - field_errors.keys():
+            _LOGGER.info("Parsing error cleared for %s at %s", key, self.host)
+        self._field_errors = field_errors.copy()
+        return OnuStatus(
+            values={**device, **pon},
+            mac_address=identity,
+            pon_mode=mode,
+            field_errors=field_errors,
+        )
 
     async def async_get_status(self) -> OnuStatus:
         """Read a complete snapshot, then log out before releasing the poll lock."""

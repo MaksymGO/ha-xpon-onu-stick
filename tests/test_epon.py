@@ -57,10 +57,22 @@ def test_gpon_autodetection_preserves_original_readings(pon_html):
     assert values["rx_power"] == -26.382721
 
 
-@pytest.mark.parametrize("label", ["ONU State", "ONU ID", "LOID Status", "Rx Power"])
-def test_damaged_gpon_is_not_misidentified_as_epon(pon_html, label):
-    with pytest.raises(OnuParseError):
-        parse_pon_status_page(pon_html.replace(label, "Missing"))
+@pytest.mark.parametrize(
+    "label, key",
+    [
+        ("ONU State", "onu_state"),
+        ("ONU ID", "onu_id"),
+        ("LOID Status", "loid_status"),
+        ("Rx Power", "rx_power"),
+    ],
+)
+def test_damaged_gpon_is_not_misidentified_as_epon(pon_html, label, key):
+    errors = {}
+    mode, values = parse_pon_status_page(pon_html.replace(label, "Missing"), field_errors=errors)
+    assert mode == "gpon"
+    assert values[key] is None
+    assert set(errors) == {key}
+    assert values["temperature"] == 37.277344
 
 
 @pytest.mark.parametrize("raw", ["", "-", "--", "N/A", "unknown"])
@@ -92,10 +104,6 @@ def test_llid_indices_are_not_row_positions_or_limited_to_two(epon_pon_html):
         [("-1", 1)],
         [("bad", 1)],
         [("0.5", 1)],
-        [(0, "bad")],
-        [(0, "1.5")],
-        [(0, "-1")],
-        [(0, "NaN")],
         [(0, 1, "extra")],
         [(0,)],
     ],
@@ -103,6 +111,18 @@ def test_llid_indices_are_not_row_positions_or_limited_to_two(epon_pon_html):
 def test_invalid_llid_tables_fail(epon_pon_html, rows):
     with pytest.raises(OnuParseError):
         parse_pon_status_page(replace_llid_table(epon_pon_html, llid_table(rows)))
+
+
+@pytest.mark.parametrize("raw", ["bad", "1.5", "-1", "NaN"])
+def test_invalid_llid_status_only_affects_that_index(epon_pon_html, raw):
+    errors = {}
+    html = replace_llid_table(epon_pon_html, llid_table([(0, raw), (1, 0)]))
+    mode, values = parse_pon_status_page(html, field_errors=errors)
+    assert mode == "epon"
+    assert values["epon_llid_0_status"] is None
+    assert values["epon_llid_1_status"] == 0
+    assert values["rx_power"] == -18.1
+    assert set(errors) == {"epon_llid_0_status"}
 
 
 @pytest.mark.parametrize(
@@ -137,14 +157,27 @@ def test_ambiguous_modes_rejected(pon_html):
 
 
 @pytest.mark.parametrize("replacement", ["missing", "NAN", "2 V"])
-def test_invalid_epon_optical_value_fails(epon_pon_html, replacement):
-    with pytest.raises(OnuParseError):
-        parse_pon_status_page(epon_pon_html.replace("-18.1  dBm", replacement))
+def test_invalid_epon_optical_value_is_isolated(epon_pon_html, replacement):
+    errors = {}
+    mode, values = parse_pon_status_page(
+        epon_pon_html.replace("-18.1  dBm", replacement), field_errors=errors
+    )
+    assert mode == "epon"
+    assert values["rx_power"] is None
+    assert values["epon_llid_0_status"] == 1
+    assert set(errors) == {"rx_power"}
 
 
-def test_missing_epon_optical_field_fails(epon_pon_html):
-    with pytest.raises(OnuParseError):
-        parse_pon_status_page(epon_pon_html.replace("Temperature", "Missing"))
+def test_missing_epon_optical_field_is_isolated(epon_pon_html):
+    errors = {}
+    mode, values = parse_pon_status_page(
+        epon_pon_html.replace("Temperature", "Missing"), field_errors=errors
+    )
+    assert mode == "epon"
+    assert values["temperature"] is None
+    assert values["rx_power"] == -18.1
+    assert values["epon_llid_0_status"] == 1
+    assert set(errors) == {"temperature"}
 
 
 def test_pon_login_page_still_requires_authentication(login_html):
@@ -213,20 +246,34 @@ async def test_epon_authentication_and_session_expiry(
     )
 
 
-async def test_missing_gpon_device_name_still_fails(onu_server, epon_device_html):
+async def test_missing_gpon_device_name_uses_upstream_fallback(onu_server, epon_device_html):
     host, state, _ = onu_server
     state["device"] = epon_device_html
     async with aiohttp.ClientSession() as session:
-        with pytest.raises(OnuParseError, match="identity"):
+        status = await OnuClient(session, host).async_get_status()
+    assert status.name == "XPON ONU Stick (02:00:00:00:00:01)"
+    assert set(status.field_errors) == {"device_name"}
+
+
+async def test_missing_epon_identity_fails(onu_server, epon_device_html, epon_pon_html):
+    host, state, _ = onu_server
+    state.update(device=epon_device_html.replace("MAC Address", "Missing"), pon=epon_pon_html)
+    async with aiohttp.ClientSession() as session:
+        with pytest.raises(OnuParseError):
             await OnuClient(session, host).async_get_status()
 
 
-@pytest.mark.parametrize("label", ["MAC Address", "Firmware Version", "CPU Usage"])
-async def test_missing_required_epon_device_fields_fail(
-    onu_server, epon_device_html, epon_pon_html, label
+@pytest.mark.parametrize(
+    "label, key", [("Firmware Version", "firmware_version"), ("CPU Usage", "cpu_usage")]
+)
+async def test_missing_epon_device_field_is_isolated(
+    onu_server, epon_device_html, epon_pon_html, label, key
 ):
     host, state, _ = onu_server
     state.update(device=epon_device_html.replace(label, "Missing"), pon=epon_pon_html)
     async with aiohttp.ClientSession() as session:
-        with pytest.raises(OnuParseError):
-            await OnuClient(session, host).async_get_status()
+        status = await OnuClient(session, host).async_get_status()
+    assert status.values[key] is None
+    assert status.values["rx_power"] == -18.1
+    assert set(status.field_errors) == {key}
+    assert len(state["logout_posts"]) == 1

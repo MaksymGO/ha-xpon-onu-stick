@@ -1,6 +1,7 @@
 """Interpret reported readings using adjustable advisory limits."""
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -173,8 +174,12 @@ def registration_status(raw_state: str | None) -> FriendlyStatus:
         return FriendlyStatus(
             None, {"onu_state": raw_state, "description": "No ONU state is available."}
         )
+    code = raw_state.strip().upper()
+    # Some stock Realtek builds include the state name, e.g. Operation State(O5).
+    if match := re.fullmatch(r"[^()]*\(\s*(O[1-7])\s*\)", code):
+        code = match[1]
     state, description = ONU_STATES.get(
-        raw_state.strip().upper(),
+        code,
         ("unrecognized", "The device reported an unrecognized GPON registration state."),
     )
     return FriendlyStatus(state, {"onu_state": raw_state, "description": description})
