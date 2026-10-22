@@ -1,6 +1,6 @@
 # XPON ONU Stick for Home Assistant
 
-A local, read-only custom integration for XPON/GPON ONU SFP sticks. It reads the stick's Device Status and PON Status pages from the stick's own management web interface, independently of the router, switch, or media converter the stick is plugged into. Tested with an **ODI DFP-34X-2C2 GPON SFP stick on firmware V1.0-220923**.
+A local, read-only custom integration for XPON ONU sticks in GPON or EPON mode. It reads the stick's Device Status and PON Status pages from the stick's own management web interface, independently of the router, switch, or media converter the stick is plugged into. GPON was tested with an **ODI DFP-34X-2C2 GPON SFP stick on firmware V1.0-220923**. EPON support is verified against captured status pages from firmware **V2.11.00P3T1** and a local Home Assistant simulator; direct polling of that device has not been verified.
 
 ## Install
 
@@ -76,10 +76,21 @@ The screenshots show one example installation.
 | GPON Status | ONU state | Text, e.g. `O5` |
 | GPON Status | ONU ID | Integer, including `0` |
 | GPON Status | LOID status | Text, e.g. `Initial Status` |
+| EPON LLID Status | EPON LLID *index* status | Raw integer code per reported index, e.g. `1` or `0` |
 
 Numeric measurements retain the precision supplied by the stick and support history/statistics. Suggested display precision keeps the dashboard readable. ONU ID is an identifier, so it does not accumulate statistics. Uptime remains the firmware's original text rather than guessing its format.
 
 Device name, firmware, and LAN information are diagnostic sensors. They are enabled and can still be added to dashboards.
+
+### GPON and EPON detection
+
+The integration detects the mode on each poll; no mode setting is needed. GPON requires its existing ONU State, ONU ID, and LOID Status rows. EPON requires an **EPON LLID Status** table with **index** and **Status** columns and at least one data row. Both modes require the five optical measurements. Missing GPON fields alone do not imply EPON. Incomplete or ambiguous pages make the poll fail.
+
+GPON keeps its 22 sensors and existing unique IDs. EPON creates the 13 common readings, five measurement status sensors, and one sensor per reported LLID index: 20 sensors for the supplied two-index capture. Each sensor includes a `pon_mode` attribute (`gpon` or `epon`). LLID statuses retain the firmware's numeric codes without statistics or a connected/disconnected interpretation. An LLID table index is not exposed as a GPON ONU ID.
+
+New LLID indices and sensors for a newly detected mode are added automatically. Previously created sensors that do not apply to the current mode, or whose LLID index disappears, become unavailable. Returning indices reuse their existing unique IDs. Empty or `N/A` values within a present row become unknown.
+
+On EPON firmware that omits Device Name, the device and integration entry use `XPON ONU <MAC address>` as a stable display name. The Device name sensor remains unknown and no hardware model is invented from commented-out HTML. MAC address remains required for device identity.
 
 ### Friendly status sensors
 
@@ -108,7 +119,7 @@ See [Adjust the status limits](docs/configuration.md#5-adjust-the-status-limits)
 | Voltage | From 3.135 to 3.465 V is Normal. Below this range is Low voltage. Above it is High voltage. |
 | Bias current | Limits not set until you provide both limits from your module's specification. Values within the configured range are Normal. Values outside it are Low current or High current. A negative reading is Invalid reading. |
 
-The optical defaults use the GPON Class B+ ONU reference values in [ITU-T G.984.2, Table A.1](https://www.itu.int/rec/dologin_pub.asp?id=T-REC-G.984.2-201908-I!!PDF-E&lang=e&type=items). The integration does not detect the module's optical class. Change these limits for other classes or manufacturer specifications. The 2 dB receive warning margin is an advisory buffer chosen by this integration. Set it to 0 to disable the Weak signal and Strong signal warnings.
+The optical defaults use the GPON Class B+ ONU reference values in [ITU-T G.984.2, Table A.1](https://www.itu.int/rec/dologin_pub.asp?id=T-REC-G.984.2-201908-I!!PDF-E&lang=e&type=items). The integration does not detect the module's optical class. EPON detection does not change these defaults or your saved limits: set the optical limits from your EPON module's specification before relying on the friendly power statuses. Change these limits for other classes or manufacturer specifications. The 2 dB receive warning margin is an advisory buffer chosen by this integration. Set it to 0 to disable the Weak signal and Strong signal warnings.
 
 The temperature and voltage defaults are generic guidelines for a commercial 3.3 V SFP module, with a 60 °C warm warning chosen by this integration. For example, the [Fibrain GPON SFP datasheet](https://fibrain.pl/wp-content/uploads/2020/12/DSH_FTS-GPON-OLT-CMAX.pdf) specifies a 0 to 70 °C operating range and a 3.135 to 3.465 V supply range. Internal sensor temperature can differ from the specified ambient or case temperature, so use the limits recommended for your module's reported measurement.
 
@@ -118,7 +129,7 @@ For example, an Rx reading of −26.38 dBm displays **Weak signal** with the def
 
 ### ONU registration states
 
-The original **ONU state** sensor keeps the firmware's code and gains a description attribute. **ONU registration status** shows its friendly label.
+In GPON mode, the original **ONU state** sensor keeps the firmware's code and gains a description attribute. **ONU registration status** shows its friendly label. These two sensors do not interpret EPON LLID status codes.
 
 | ONU state | Friendly status | Meaning |
 | --- | --- | --- |
@@ -134,7 +145,7 @@ O1 to O5 follow the [Zyxel GPON registration guide](https://service-provider.zyx
 
 ## Refresh and connection settings
 
-The default refresh interval is **30 seconds**. Each poll makes two sequential GET requests shared by all sensors. Open the integration's options and select **Refresh interval** to change it, between 10 and 3600 seconds. Changing the interval preserves your status limits.
+The default refresh interval is **30 seconds**. Each successful status read makes two sequential GET requests shared by all sensors, followed by one logout POST. Login requests are added when required by the ONU. Open the integration's options and select **Refresh interval** to change it, between 10 and 3600 seconds. Changing the interval preserves your status limits.
 
 The [configuration guide](docs/configuration.md#4-set-the-refresh-interval) shows the refresh interval form and how to apply changes.
 
@@ -151,7 +162,13 @@ The integration reads the two status pages:
 - `GET /status.asp`
 - `GET /status_pon.asp`
 
-When the stick requests authentication, it also uses `GET /admin/login.asp` and submits **only** the login form with `POST /boaform/admin/formLogin`. If you enter a username, every request also carries it as HTTP Basic credentials, for firmware that protects its pages that way. It does not submit the status pages' Refresh forms, follow redirects, read settings pages, or expose configuration/reboot controls. Adding or changing the integration's options changes only Home Assistant configuration.
+When the stick requests authentication, it also uses `GET /admin/login.asp` and submits the login form with `POST /boaform/admin/formLogin`. If you enter a username, every request also carries it as HTTP Basic credentials, for firmware that protects its pages that way. After both status pages are read and validated, the client sends `POST /boaform/admin/formLogout` with `save=Logout`, `submit-url=/admin/logout.asp`, and `/admin/logout.asp` as the Referer path. This reproduces the supplied logout HAR; the logout page itself does not need to be fetched because the captured form has no dynamic fields.
+
+Logout is attempted after every successful read in GPON and EPON, including initial setup validation and polling that required no login or cookies. This also covers an existing IP-bound session. The captured response is HTTP 200 with the visible heading `OK: logout successfully!`. The client clears its cookies only after receiving this confirmation; the next poll signs in again if the ONU requires it. Logout completes or times out before another poll can start on the same client.
+
+**Logout failure is non-critical.** Timeouts, HTTP errors, redirects, or an unrecognized response produce a warning in the Home Assistant log while preserving the freshly read sensor values. They do not trigger a credentials prompt. The next successful status read attempts logout again. Local cookies are retained when logout cannot be confirmed. A failed status read does not submit logout.
+
+The integration only submits login and logout forms. It does not submit the status pages' Refresh forms, follow redirects, read settings pages, or expose configuration/reboot controls. Adding or changing the integration's options changes only Home Assistant configuration.
 
 Both pages must be valid before a snapshot is published. When either page is unreachable or invalid, the sensors become unavailable instead of displaying stale readings as current. Polling resumes after ordinary connection failures. Empty or `N/A` readings become unknown, rather than a fabricated zero.
 
@@ -184,23 +201,26 @@ These share the hardware, the firmware, or the Realtek web pages of the tested s
 | Luleey LL-XS2510 | Realtek RTL9601D stick whose login form and PON Status page match the stock Realtek pages. | CPU Usage and Memory Usage on the Device Status page. |
 | V-SOL V2801F, T&W TWCGPON657 | Realtek RTL9601CI sticks with the same family of web pages. | Fields and login form. |
 
+### EPON verified with captured HTML
+
+Firmware `V2.11.00P3T1` supplies the supported EPON LLID table with indices 0 and 1 and omits the visible Device Name row. The device's hardware model is not established by the captured pages. Sanitized copies are included in `tests/fixtures/epon_device_status.html` and `tests/fixtures/epon_pon_status.html`. Other EPON page layouts require separate verification.
+
 ### Not supported
 
 - ODI's older ZTE-chipset stick and Lantiq/MaxLinear-based sticks, such as the Huawei MA5671A, Nokia G-010S-P, FS GPON-ONU-34-20BI, and HALNy HL-GSFP. Their web interfaces are different or absent.
 - Replacement firmware that removes the stock status pages, such as odi-oss.
-- Any stick running in EPON mode, as explained below.
+- EPON firmware that does not serve the supported optical readings and EPON LLID Status table.
 
 ### Check an untested stick
 
 The integration works when all of these are true:
 
-- `GET /status.asp` shows Device Name, Uptime, Firmware Version, CPU Usage, Memory Usage, IP Address, Subnet Mask, and MAC Address.
-- `GET /status_pon.asp` shows Temperature, Voltage, Tx Power, Rx Power, Bias Current, ONU State, ONU ID, and LOID Status.
+- `GET /status.asp` shows Device Name, Uptime, Firmware Version, CPU Usage, Memory Usage, IP Address, Subnet Mask, and MAC Address. Device Name may be omitted in EPON mode.
+- `GET /status_pon.asp` shows Temperature, Voltage, Tx Power, Rx Power, and Bias Current, plus either the GPON rows (ONU State, ONU ID, LOID Status) or the EPON LLID Status table (index, Status).
 - The web interface is in English, because field labels are matched as English text.
-- The stick is in GPON mode. In EPON mode, the firmware replaces the ONU State, ONU ID, and LOID Status rows with an EPON table, so the integration reports missing fields.
 - If the pages require a login, `/admin/login.asp` has a form that posts `username`, `password`, and `save` to `/boaform/admin/formLogin` with an empty challenge. Older Realtek firmware that names the password field `psd` isn't supported.
 
-The quickest check is the [live test](#test-the-real-stick), which prints all 16 readings or the reason it can't read them.
+The quickest check is the [live test](#test-the-real-stick), which prints the readings for the detected mode or the reason it can't read them.
 
 References: [ODI DFP-34X-2C2 firmware notes](https://github.com/Anime4000/RTL960x/blob/main/Firmware/DFP-34X-2C2/README.md), [ODI firmware archive](https://www.tripleoxygen.net/files/devices/odi/dfp-34x-2c2/firmware/), and [DFP-34X-2C2 hardware reference](https://hack-gpon.org/ont-odi-realtek-dfp-34x-2c2/).
 
@@ -218,7 +238,7 @@ Run commands from the repository directory. Use **Python 3.14.2 or newer in the 
 ./scripts/test.sh
 ```
 
-The script checks HACS metadata, repository layout, translations, brand images, installed dependencies, lint, formatting, and the complete test suite. Tests cover status boundaries, ONU state descriptions, shared polling, options form display, and saving or clearing module-specific limits. It stops at the first failing check and returns a nonzero exit code. Full output is saved to `.test-results/test-*.log`, including failed runs.
+The script checks HACS metadata, repository layout, translations, brand images, installed dependencies, lint, formatting, and the complete test suite. Tests cover status boundaries, ONU state descriptions, shared polling, options form display, and saving or clearing module-specific limits. EPON tests cover captured HTML, missing Device Name, LLID values and indices, malformed tables, mode changes, entity identity, and recovery after failed polls. It stops at the first failing check and returns a nonzero exit code. Full output is saved to `.test-results/test-*.log`, including failed runs.
 
 ### Test the real stick
 
@@ -234,4 +254,4 @@ If the stick requires authentication:
 ./scripts/test.sh --live --host http://onu.example --username YOUR_USERNAME
 ```
 
-The script prompts privately for the password, then prints all 16 readings as JSON. Passwords are not passed as command-line arguments or saved in the test log. The live readings themselves are included in the log. A connection, authentication, or parsing failure makes the script fail. Use `./scripts/test.sh --help` for all options.
+The script prompts privately for the password, then prints the readings as JSON: 16 fields for GPON, or the common fields plus `epon_llid_<index>_status` fields for EPON. Passwords are not passed as command-line arguments or saved in the test log. The live readings themselves are included in the log. A connection, authentication, or parsing failure makes the script fail. Use `./scripts/test.sh --help` for all options.

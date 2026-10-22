@@ -23,6 +23,12 @@ from custom_components.xpon_onu_stick.api import (
 from custom_components.xpon_onu_stick.const import DOMAIN
 
 
+def sensor_for_key(hass, entry, key):
+    """Resolve by stable unique ID, independent of a firmware-supplied name."""
+    entity_id = er.async_get(hass).async_get_entity_id("sensor", DOMAIN, f"{entry.unique_id}_{key}")
+    return hass.states.get(entity_id) if entity_id else None
+
+
 async def add_device(hass, host):
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}, data={CONF_HOST: host}
@@ -77,13 +83,155 @@ async def test_setup_all_readings_and_friendly_statuses_and_unload(hass, onu_ser
     assert devices[0].model == "AOT5222ZY"
     assert devices[0].sw_version == "V1.0-220923"
     assert devices[0].configuration_url == host
-    assert requests == [("GET", "/status.asp", None), ("GET", "/status_pon.asp", None)] * 2
+    assert (
+        requests
+        == [
+            ("GET", "/status.asp", None),
+            ("GET", "/status_pon.asp", None),
+            ("POST", "/boaform/admin/formLogout", None),
+        ]
+        * 2
+    )
     coordinator = entry.runtime_data
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
     assert not coordinator._listeners
     assert coordinator._unsub_refresh is None
     assert all(state.state == "unavailable" for state in hass.states.async_all("sensor"))
+
+
+async def test_setup_captured_epon_and_unload(hass, onu_server, epon_device_html, epon_pon_html):
+    host, state, requests = onu_server
+    state.update(device=epon_device_html, pon=epon_pon_html)
+    entry = await add_device(hass, host)
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.unique_id == "02:00:00:00:00:01"
+    assert entry.title == "XPON ONU 02:00:00:00:00:01"
+    assert len(hass.states.async_all("sensor")) == 20
+    for key, value in {
+        "device_name": "unknown",
+        "firmware_version": "V2.11.00P3T1",
+        "temperature": "41.0",
+        "rx_power": "-18.1",
+        "epon_llid_0_status": "1",
+        "epon_llid_1_status": "0",
+    }.items():
+        sensor = sensor_for_key(hass, entry, key)
+        assert sensor.state == value
+        assert sensor.attributes["pon_mode"] == "epon"
+    llid = sensor_for_key(hass, entry, "epon_llid_0_status")
+    assert "state_class" not in llid.attributes
+    assert "unit_of_measurement" not in llid.attributes
+    for key in ("onu_state", "onu_id", "loid_status", "onu_registration_status"):
+        assert sensor_for_key(hass, entry, key) is None
+    devices = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+    assert len(devices) == 1
+    assert devices[0].name == entry.title
+    assert devices[0].model is None
+    assert devices[0].sw_version == "V2.11.00P3T1"
+    assert (
+        requests
+        == [
+            ("GET", "/status.asp", None),
+            ("GET", "/status_pon.asp", None),
+            ("POST", "/boaform/admin/formLogout", None),
+        ]
+        * 2
+    )
+    coordinator = entry.runtime_data
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert not coordinator._listeners
+    assert coordinator._unsub_refresh is None
+
+
+async def test_epon_refresh_and_new_llid_indices(hass, onu_server, epon_device_html, epon_pon_html):
+    host, state, requests = onu_server
+    state.update(device=epon_device_html, pon=epon_pon_html)
+    entry = await add_device(hass, host)
+    original_id = sensor_for_key(hass, entry, "epon_llid_0_status").entity_id
+    # Retain index 0, remove index 1, and report index 3. Only the first reading
+    # becomes unknown; its index still exists and must stay available.
+    state["pon"] = epon_pon_html.replace(
+        "<b>1</b></font></td><br>", "<b>N/A</b></font></td><br>", 1
+    ).replace("<b>1</b></font></td>\n", "<b>3</b></font></td>\n")
+    requests.clear()
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert sensor_for_key(hass, entry, "epon_llid_0_status").state == "unknown"
+    assert sensor_for_key(hass, entry, "epon_llid_1_status").state == "unavailable"
+    assert sensor_for_key(hass, entry, "epon_llid_3_status").state == "0"
+    assert requests == [
+        ("GET", "/status.asp", None),
+        ("GET", "/status_pon.asp", None),
+        ("POST", "/boaform/admin/formLogout", None),
+    ]
+    state["pon"] = epon_pon_html
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert sensor_for_key(hass, entry, "epon_llid_0_status").entity_id == original_id
+    assert sensor_for_key(hass, entry, "epon_llid_0_status").state == "1"
+    assert sensor_for_key(hass, entry, "epon_llid_1_status").state == "0"
+    assert sensor_for_key(hass, entry, "epon_llid_3_status").state == "unavailable"
+    assert len(er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)) == 21
+
+
+@pytest.mark.parametrize("initial_mode", ["gpon", "epon"])
+async def test_mode_changes_preserve_entities_and_add_mode_specific_sensors(
+    hass, onu_server, epon_pon_html, initial_mode
+):
+    host, state, _ = onu_server
+    pages = {"gpon": state["pon"], "epon": epon_pon_html}
+    state["pon"] = pages[initial_mode]
+    entry = await add_device(hass, host)
+    rx_id = sensor_for_key(hass, entry, "rx_power").entity_id
+    modes = ["epon", "gpon"] if initial_mode == "gpon" else ["gpon", "epon"]
+    for mode in modes:
+        state["pon"] = pages[mode]
+        await entry.runtime_data.async_refresh()
+        await hass.async_block_till_done()
+        assert sensor_for_key(hass, entry, "rx_power").entity_id == rx_id
+        assert sensor_for_key(hass, entry, "rx_power").attributes["pon_mode"] == mode
+        assert sensor_for_key(hass, entry, "onu_state").state == (
+            "O5" if mode == "gpon" else "unavailable"
+        )
+        assert sensor_for_key(hass, entry, "onu_registration_status").state == (
+            "connected" if mode == "gpon" else "unavailable"
+        )
+        assert sensor_for_key(hass, entry, "epon_llid_0_status").state == (
+            "1" if mode == "epon" else "unavailable"
+        )
+    entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    assert len(entities) == len({entity.unique_id for entity in entities}) == 24
+    assert len(dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)) == 1
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert sensor_for_key(hass, entry, "rx_power").entity_id == rx_id
+    assert len(er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)) == 24
+
+
+@pytest.mark.parametrize("failure", ["http", "missing_optics", "missing_llids", "wrong_mac"])
+async def test_epon_failed_poll_and_recovery(
+    hass, onu_server, epon_device_html, epon_pon_html, failure
+):
+    host, state, _ = onu_server
+    state.update(device=epon_device_html, pon=epon_pon_html)
+    entry = await add_device(hass, host)
+    if failure == "http":
+        state["status"] = 500
+    elif failure == "missing_optics":
+        state["pon"] = epon_pon_html.replace("Rx Power", "Missing")
+    elif failure == "missing_llids":
+        state["pon"] = epon_pon_html.replace("EPON LLID Status", "Missing")
+    else:
+        state["device"] = epon_device_html.replace("020000000001", "020000000002")
+    await entry.runtime_data.async_refresh()
+    assert all(sensor.state == "unavailable" for sensor in hass.states.async_all("sensor"))
+    state.update(device=epon_device_html, pon=epon_pon_html, status=200)
+    await entry.runtime_data.async_refresh()
+    assert sensor_for_key(hass, entry, "epon_llid_0_status").state == "1"
+    assert sensor_for_key(hass, entry, "rx_power").state == "-18.1"
+    assert len(hass.states.async_all("sensor")) == 20
 
 
 async def test_failed_poll_marks_every_sensor_unavailable_then_recovers(hass, onu_server):
@@ -99,6 +247,31 @@ async def test_failed_poll_marks_every_sensor_unavailable_then_recovers(hass, on
     assert hass.states.get("sensor.aot5222zy_onu_state").state == "O5"
     assert hass.states.get("sensor.aot5222zy_temperature_status").state == "good"
     assert hass.states.get("sensor.aot5222zy_onu_registration_status").state == "connected"
+
+
+@pytest.mark.parametrize("mode", ["gpon", "epon"])
+async def test_logout_failure_does_not_block_setup_or_updates(
+    hass, onu_server, epon_pon_html, mode
+):
+    host, state, _ = onu_server
+    if mode == "epon":
+        state["pon"] = epon_pon_html
+    state["logout_status"] = 403
+    entry = await add_device(hass, host)
+    assert entry.state is ConfigEntryState.LOADED
+    assert len(state["logout_posts"]) == 2  # Flow validation and initial coordinator refresh.
+    state["pon"] = state["pon"].replace("37.277344 C" if mode == "gpon" else "41.0 C", "42 C")
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert entry.runtime_data.last_update_success
+    assert sensor_for_key(hass, entry, "temperature").state == "42.0"
+    assert not hass.config_entries.flow.async_progress()
+    assert all(sensor.state != "unavailable" for sensor in hass.states.async_all("sensor"))
+    assert len(state["logout_posts"]) == 3
+    state["logout_status"] = 200
+    await entry.runtime_data.async_refresh()
+    assert len(state["logout_posts"]) == 4
+    assert entry.runtime_data.last_update_success
 
 
 async def test_friendly_statuses_follow_new_readings_on_the_shared_poll(hass, onu_server):
@@ -129,7 +302,11 @@ async def test_friendly_statuses_follow_new_readings_on_the_shared_poll(hass, on
     assert hass.states.get("sensor.aot5222zy_rx_power").state == "-28.0"
     assert hass.states.get("sensor.aot5222zy_bias_current").state == "unknown"
     assert hass.states.get("sensor.aot5222zy_onu_state").state == "O6"
-    assert requests == [("GET", "/status.asp", None), ("GET", "/status_pon.asp", None)]
+    assert requests == [
+        ("GET", "/status.asp", None),
+        ("GET", "/status_pon.asp", None),
+        ("POST", "/boaform/admin/formLogout", None),
+    ]
 
 
 async def test_missing_readings_and_unrecognized_registration_state(hass, onu_server):
@@ -275,7 +452,8 @@ async def test_status_limits_reload_sensors_and_survive_polling_changes(hass, on
     assert entry.runtime_data.update_interval.total_seconds() == 60
     assert hass.states.get("sensor.aot5222zy_bias_current_status").state == "good"
     assert all(
-        method == "GET" and path in {"/status.asp", "/status_pon.asp"}
+        (method == "GET" and path in {"/status.asp", "/status_pon.asp"})
+        or (method == "POST" and path == "/boaform/admin/formLogout")
         for method, path, _ in requests
     )
 

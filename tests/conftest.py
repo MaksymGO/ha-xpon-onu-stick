@@ -26,6 +26,16 @@ def pon_html():
 
 
 @pytest.fixture
+def epon_device_html():
+    return (FIXTURES / "epon_device_status.html").read_text()
+
+
+@pytest.fixture
+def epon_pon_html():
+    return (FIXTURES / "epon_pon_status.html").read_text()
+
+
+@pytest.fixture
 def login_html():
     return (FIXTURES / "login.html").read_text()
 
@@ -49,10 +59,35 @@ async def onu_server(device_html, pon_html, login_html):
         "ip_session": False,
         "ip_authenticated": False,
         "csrf": False,
+        "logout_posts": [],
+        "logout_status": 200,
+        "logout_html": (FIXTURES / "logout_success.html").read_text(),
+        "logout_redirect": "/admin/login.asp",
     }
 
     async def status_page(request):
         requests.append((request.method, request.path, request.headers.get("Authorization")))
+        if request.path == "/boaform/admin/formLogout" and request.method == "POST":
+            state["logout_posts"].append(
+                {
+                    "data": dict(await request.post()),
+                    "referer": request.headers.get("Referer"),
+                    "session": request.cookies.get("session"),
+                }
+            )
+            if state["logout_status"] == 200 and "OK: logout successfully!" in state["logout_html"]:
+                if state["ip_session"]:
+                    state["ip_authenticated"] = False
+                else:
+                    state["sessions"].discard(request.cookies.get("session"))
+            return web.Response(
+                status=state["logout_status"],
+                headers={"Location": state["logout_redirect"]}
+                if 300 <= state["logout_status"] < 400
+                else {},
+                text=state["logout_html"],
+                content_type="text/html",
+            )
         if request.path == "/admin/login.asp":
             response = web.Response(text=state["login_html"], content_type="text/html")
             if state["csrf"]:
@@ -67,7 +102,6 @@ async def onu_server(device_html, pon_html, login_html):
             ):
                 return web.Response(text=state["login_html"], content_type="text/html")
             token = f"session-{len(state['login_posts'])}"
-            state["sessions"].add(token)
             response = web.Response(
                 status=state["login_status"],
                 headers={"Location": state["login_redirect"]}
@@ -77,6 +111,7 @@ async def onu_server(device_html, pon_html, login_html):
             if state["ip_session"]:
                 state["ip_authenticated"] = True
             else:
+                state["sessions"].add(token)
                 response.set_cookie("session", token, path="/")
             return response
         if request.path == "/status_pon.asp" and state["expire_before_pon"]:

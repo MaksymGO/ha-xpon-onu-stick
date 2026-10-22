@@ -14,12 +14,13 @@ from homeassistant.const import (
     UnitOfElectricPotential,
     UnitOfTemperature,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import OnuConfigEntry
+from .api import GPON_FIELDS
 from .const import DOMAIN
 from .coordinator import OnuCoordinator
 from .health import (
@@ -31,6 +32,7 @@ from .health import (
 )
 
 PARALLEL_UPDATES = 0
+GPON_SENSOR_KEYS = {*GPON_FIELDS.values(), "onu_registration_status"}
 SENSORS = (
     SensorEntityDescription(
         key="device_name",
@@ -153,11 +155,44 @@ async def async_setup_entry(
     entry: OnuConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Add original readings and friendly status sensors to one device."""
-    async_add_entities(
-        [OnuSensor(entry.runtime_data, description) for description in SENSORS]
-        + [OnuStatusSensor(entry.runtime_data, description) for description in STATUS_SENSORS]
-    )
+    """Add sensors for the detected mode, including newly reported LLID indices."""
+    coordinator = entry.runtime_data
+    added: set[str] = set()
+
+    @callback
+    def async_discover_sensors() -> None:
+        if not coordinator.last_update_success:
+            return
+        descriptions = [(OnuSensor, description) for description in SENSORS]
+        descriptions += [(OnuStatusSensor, description) for description in STATUS_SENSORS]
+        if coordinator.data.pon_mode == "epon":
+            descriptions = [
+                (sensor_class, description)
+                for sensor_class, description in descriptions
+                if description.key not in GPON_SENSOR_KEYS
+            ]
+            descriptions += [
+                (
+                    OnuSensor,
+                    SensorEntityDescription(
+                        key=key,
+                        name=f"EPON LLID {key.removeprefix('epon_llid_').removesuffix('_status')} status",
+                        icon="mdi:access-point-network",
+                    ),
+                )
+                for key in coordinator.data.values
+                if key.startswith("epon_llid_")
+            ]
+        entities = []
+        for sensor_class, description in descriptions:
+            if description.key not in added:
+                entities.append(sensor_class(coordinator, description))
+                added.add(description.key)
+        if entities:
+            async_add_entities(entities)
+
+    async_discover_sensors()
+    entry.async_on_unload(coordinator.async_add_listener(async_discover_sensors))
 
 
 class OnuSensor(CoordinatorEntity[OnuCoordinator], SensorEntity):
@@ -172,22 +207,32 @@ class OnuSensor(CoordinatorEntity[OnuCoordinator], SensorEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.entry.unique_id)},
             connections={(CONNECTION_NETWORK_MAC, coordinator.data.mac_address)},
-            name=str(coordinator.data.values["device_name"]),
-            model=str(coordinator.data.values["device_name"]),
+            name=coordinator.data.name,
+            model=coordinator.data.values["device_name"],
             sw_version=coordinator.data.values["firmware_version"],
             configuration_url=coordinator.client.host,
         )
+
+    @property
+    def available(self) -> bool:
+        key = self.entity_description.key
+        if key in GPON_SENSOR_KEYS and self.coordinator.data.pon_mode != "gpon":
+            return False
+        if key.startswith("epon_llid_") and key not in self.coordinator.data.values:
+            return False
+        return super().available
 
     @property
     def native_value(self) -> str | float | int | None:
         return self.coordinator.data.values.get(self.entity_description.key)
 
     @property
-    def extra_state_attributes(self) -> dict | None:
+    def extra_state_attributes(self) -> dict:
+        attributes = {"pon_mode": self.coordinator.data.pon_mode}
         if self.entity_description.key == "onu_state":
             status = registration_status(self.coordinator.data.values.get("onu_state"))
-            return {"description": status.attributes["description"]}
-        return None
+            attributes["description"] = status.attributes["description"]
+        return attributes
 
 
 class OnuStatusSensor(OnuSensor):
@@ -210,4 +255,4 @@ class OnuStatusSensor(OnuSensor):
 
     @property
     def extra_state_attributes(self) -> dict:
-        return self._status.attributes
+        return {**super().extra_state_attributes, **self._status.attributes}

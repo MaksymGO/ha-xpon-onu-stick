@@ -114,13 +114,17 @@ def test_mac_identity():
         normalize_mac("not-a-mac")
 
 
-async def test_client_reads_only_two_pages(onu_server):
+async def test_client_reads_two_pages_then_logs_out(onu_server):
     host, _, requests = onu_server
     async with aiohttp.ClientSession() as session:
         status = await OnuClient(session, host).async_get_status()
     assert len(status.values) == 16
     assert status.mac_address == "02:00:00:00:00:01"
-    assert requests == [("GET", "/status.asp", None), ("GET", "/status_pon.asp", None)]
+    assert requests == [
+        ("GET", "/status.asp", None),
+        ("GET", "/status_pon.asp", None),
+        ("POST", "/boaform/admin/formLogout", None),
+    ]
 
 
 async def test_http_basic_auth(onu_server):

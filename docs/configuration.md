@@ -20,8 +20,12 @@ The integration only reads status. Screenshot IP and MAC addresses are masked fo
 
 ## 2. Check the readings
 
-- Open the device to see **22 entities**, including measurements and friendly statuses.
+- Open the device to see measurements and friendly statuses: **22 entities in GPON**, or **18 common entities plus one per LLID index in EPON** (20 for the captured two-index device).
 - **Sensors** shows PON and system readings. **Diagnostic** shows device and network information.
+- Mode is detected automatically and shown in each sensor's `pon_mode` attribute. EPON exposes the raw **EPON LLID 0 status**, **EPON LLID 1 status**, etc. codes; these are not GPON registration states.
+- If EPON firmware hides Device Name, the device is named `XPON ONU <MAC address>` and its Device name sensor is unknown.
+
+After every successful read, the integration submits logout to release the ONU management session. It signs in again on the next poll when needed. A logout failure only produces a log warning; current sensor readings remain available.
 
 <details>
 <summary>View sensors and diagnostics</summary>
@@ -55,6 +59,8 @@ The integration only reads status. Screenshot IP and MAC addresses are masked fo
 
 Each maximum must exceed its minimum. See [Default status limits](../README.md#default-status-limits) for all defaults and how readings are classified.
 
+Optical defaults remain GPON Class B+ values in both modes. For EPON, set limits from your module's specification. Automatic mode detection preserves your saved limits.
+
 <img src="screenshots/status-limits.png" alt="Status limits form" width="440">
 
 ## 6. Change the address or login
@@ -87,6 +93,8 @@ Changing the address preserves entities for the same stick. Add a different stic
 - **Integration missing:** check installation and restart Home Assistant.
 - **Connection or login fails:** check the address, reachability from Home Assistant, and ONU credentials.
 - **Entities unavailable:** both status pages must be reachable and supported.
+- **GPON or EPON sensors unavailable after a mode change:** sensors from the previous mode remain registered but unavailable. Sensors for the detected mode are added automatically. A missing LLID index also makes its sensor unavailable until the index returns.
 - **Reading unknown:** the device returned an empty or unavailable value.
+- **Unable to confirm ONU logout:** the status read succeeded, but the logout request failed or its response did not match the captured confirmation. Sensor updates continue, and logout is attempted after the next successful read. The server session may still be active.
 
 For a read-only connection check, see [Test the real stick](../README.md#test-the-real-stick).

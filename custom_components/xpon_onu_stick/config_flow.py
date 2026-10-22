@@ -109,7 +109,7 @@ class OnuConfigFlow(ConfigFlow, domain=DOMAIN):
                         return self.async_update_reload_and_abort(entry, data=data)
                     self._abort_if_unique_id_configured()
                     return self.async_create_entry(
-                        title=str(status.values["device_name"]),
+                        title=status.name,
                         data=data,
                     )
             except ValueError:
